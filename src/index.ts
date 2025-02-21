@@ -1,4 +1,4 @@
-import { EventEmitter } from "node:events";
+import { EventEmitter } from 'node:events';
 
 interface UpdateRequest {
   id: number;
@@ -20,22 +20,59 @@ class UpdateIssues {
 // - either the result is keyed by input, or by an id in the input
 
 type Handler<In, Out> = {
-  fn: (request: In[]) => Promise<Map<number, Out>>;
-  queue: { key: In; resolve: (ret: Out) => void }[];
-  keySelector: (request: In) => number;
+  fn: BulkHandlerFn<In, Out>;
+  queue: HandlerQueue<In, Out>;
 };
 
-export class BulkyPlan {
-  getCurrentBudgets: Handler<number, number>;
-  updateBudgets: Handler<UpdateRequest, boolean>;
+type BulkHandlerFn<In, Out> = (request: In[]) => Promise<Map<In, Out>>;
+type ScalarHandlerFn<In, Out> = (request: In) => Promise<Out>;
 
+type HandlerQueue<In, Out> = { key: In; resolve: (ret: Out) => void }[];
+
+type Scalarize<T extends Record<string, BulkHandlerFn<any, any>>> = {
+  [K in keyof T]: T[K] extends BulkHandlerFn<infer In, infer Out>
+    ? ScalarHandlerFn<In, Out>
+    : never;
+};
+
+type Handlerize<T extends Record<string, BulkHandlerFn<any, any>>> = {
+  [K in keyof T]: T[K] extends BulkHandlerFn<infer In, infer Out>
+    ? Handler<In, Out>
+    : never;
+};
+
+export class BulkyPlan<T extends Record<string, BulkHandlerFn<any, any>>> {
   lastSeenHandler!: Handler<any, any>;
+  handlerRegistry: Handlerize<T>;
+
+  filteredCandidates: number = 0;
+  totalCandidates: number = 0;
+
+  constructor(
+    private processor: (
+      request: UpdateRequest,
+      use: Scalarize<T>,
+    ) => Promise<UpdateIssues | null>,
+
+    registry: T,
+  ) {
+    this.handlerRegistry = {} as Handlerize<T>;
+    this.registerHandlers(registry);
+  }
+
+  private registerHandlers(handlers: T) {
+    for (const [name, handler] of Object.entries(handlers) as Array<
+      [keyof T, T[keyof T]]
+    >) {
+      this.handlerRegistry[name] = {
+        fn: handler,
+        queue: [],
+      } as any; // TODO: fix this
+    }
+  }
 
   maybeExecute<In, Out>(handler: Handler<In, Out>) {
-    if (
-      handler.queue.length + this.filteredCandidates !==
-      this.totalCandidates
-    ) {
+    if (handler.queue.length + this.filteredCandidates !== this.totalCandidates) {
       // not all candidates have reached the next checkpoint
       return;
     }
@@ -44,78 +81,32 @@ export class BulkyPlan {
     const args = handler.queue.map((item) => item.key);
     handler.fn(args).then((result) => {
       for (const item of handler.queue) {
-        const key = handler.keySelector(item.key);
-        item.resolve(result.get(key)!);
+        item.resolve(result.get(item.key)!);
       }
       handler.queue = [];
     });
   }
 
-  constructor(
-    public processor: (
-      request: UpdateRequest,
-      use: {
-        getCurrentBudgets: (id: number) => Promise<number>;
-        updateBudgets: (request: UpdateRequest) => Promise<boolean>;
-      },
-    ) => Promise<UpdateIssues | null>,
-
-    registry: {
-      getCurrentBudgets: (requestIds: number[]) => Promise<Map<number, number>>;
-      updateBudgets: {
-        fn: (requests: UpdateRequest[]) => Promise<Map<number, boolean>>;
-        keySelector: (request: UpdateRequest) => number;
-      };
-    },
-  ) {
-    this.getCurrentBudgets = {
-      fn: registry.getCurrentBudgets,
-      keySelector: (id) => id,
-      queue: [],
-    };
-    this.updateBudgets = { ...registry.updateBudgets, queue: [] };
-  }
-
-  events = new EventEmitter();
-  filteredCandidates: number = 0;
-  totalCandidates: number = 0;
-
-  private getGetCurrentBudgets() {
-    return async (id: number): Promise<number> => {
-      this.lastSeenHandler = this.getCurrentBudgets;
-
-      return new Promise<number>((resolve) => {
-        this.getCurrentBudgets.queue.push({ key: id, resolve });
-        this.maybeExecute(this.getCurrentBudgets);
-      });
-    };
-  }
-
-  private getUpdateBudgets() {
-    return async (req: UpdateRequest): Promise<boolean> => {
-      this.lastSeenHandler = this.updateBudgets;
-
-      return new Promise<boolean>((resolve) => {
-        this.updateBudgets.queue.push({ key: req, resolve });
-        this.maybeExecute(this.updateBudgets);
-      });
-    };
-  }
-
-  async run(
-    requests: UpdateRequest[],
-    keySelector: (r: UpdateRequest) => number,
-  ): Promise<Map<number, UpdateIssues>> {
+  async run(requests: UpdateRequest[]): Promise<Map<UpdateRequest, UpdateIssues>> {
     this.totalCandidates = requests.length;
 
-    const getCurrentBudgets = this.getGetCurrentBudgets();
-    const updateBudgets = this.getUpdateBudgets();
+    const processorHandlers = {} as Scalarize<T>;
+
+    for (const handlerName of Object.keys(this.handlerRegistry) as Array<keyof T>) {
+      const handler = this.handlerRegistry[handlerName];
+
+      processorHandlers[handlerName] = (async (input: any): Promise<any> => {
+        this.lastSeenHandler = handler;
+
+        return new Promise<any>((resolve) => {
+          handler.queue.push({ key: input, resolve });
+          this.maybeExecute(handler);
+        });
+      }) as any; // TODO: fix this
+    }
 
     const handlers = requests.map(async (request) => {
-      const result = await this.processor(request, {
-        getCurrentBudgets,
-        updateBudgets,
-      });
+      const result = await this.processor(request, processorHandlers);
 
       if (result) {
         this.filteredCandidates += 1;
@@ -128,8 +119,8 @@ export class BulkyPlan {
     const results = await Promise.all(handlers);
     const resultsByKey = new Map(
       results
-        .map((result, index) => [keySelector(requests[index]), result] as const)
-        .filter((pair): pair is [number, UpdateIssues] => !!pair[1]),
+        .map((result, index) => [requests[index], result] as const)
+        .filter((pair): pair is [UpdateRequest, UpdateIssues] => !!pair[1]),
     );
 
     return resultsByKey;
