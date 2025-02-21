@@ -1,0 +1,20 @@
+{
+  "name": "debulk",
+  "version": "1.0.0",
+  "description": "Write scalar logic for bulk processing workflows.",
+  "author": "Luis Meyer",
+  "license": "ISC",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "test": "jest"
+  },
+  "devDependencies": {
+    "@types/jest": "^29.5.14",
+    "jest": "^29.7.0",
+    "ts-jest": "^29.2.5",
+    "typescript": "^5.7.3"
+  }
+}
