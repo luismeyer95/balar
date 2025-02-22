@@ -87,7 +87,7 @@ export class BulkyPlan<
     }
   }
 
-  maybeExecute<In, Out>(handler: Handler<In, Out>) {
+  private maybeExecute<In, Out>(handler: Handler<In, Out>) {
     // Checks if all candidates have reached the next checkpoint.
 
     // If all concurrent executions at this time have either
@@ -100,14 +100,22 @@ export class BulkyPlan<
       return;
     }
 
+    if (handler.queue.length === 0) {
+      return;
+    }
+
     // Next checkpoint reached, run bulk operation
-    const args = handler.queue.map((item) => item.key);
+    const args = this.deduplicate(handler.queue.map((item) => item.key));
     handler.fn(args).then((result) => {
       for (const item of handler.queue) {
         item.resolve(result.get(item.key)!);
       }
       handler.queue = [];
     });
+  }
+
+  private deduplicate<In>(inputs: In[]): In[] {
+    return Array.from(new Set(inputs));
   }
 
   async run(requests: MainIn[]): Promise<Map<MainIn, MainOut>> {
@@ -124,7 +132,7 @@ export class BulkyPlan<
         // When a scalar function is called, we need to keep track of which handler it came from.
         // If an execution returns when all other concurrent executions are awaiting the next
         // checkpoint, we should execute the bulk handler for this next checkpoint, which should
-        // be the one from the last register scalar call.
+        // be the one from the last registered scalar call.
         //
         // TODO: check if we should poll all handlers for execution instead.
         this.lastSeenHandler = handler;
