@@ -1,38 +1,38 @@
-import { BulkyPlan } from '../src/index';
+import {
+  BulkHandlerFn,
+  BulkyPlan,
+  InputTransformerFn,
+  RegisterEntry,
+} from '../src/index';
 import {
   Account,
   AccountsRepository,
   BudgetsRepository,
-  UpdateIssues,
+  UpdateIssues as Issues,
 } from './fakes/budget.fake';
 
 describe('budget tests', () => {
-  const accountsRepository = new AccountsRepository();
-  const budgetsRepository = new BudgetsRepository();
+  const accountsRepo = new AccountsRepository();
+  const budgetsRepo = new BudgetsRepository();
 
-  const ACCOUNT = { name: 'Default Account', exceededBudgetsCount: 0 };
+  const ACCOUNT: Account = { name: 'Default Account' };
 
   async function setupAccountsAndBudgets() {
-    const accountId = await accountsRepository.createAccount(ACCOUNT);
+    const accountId = await accountsRepo.createAccount(ACCOUNT);
     for (const id of [1, 2, 3, 4]) {
-      await budgetsRepository.createBudget({
+      await budgetsRepo.createBudget({
         accountId,
         amount: id * 500,
       });
     }
   }
 
-  const spyGetCurrentBudgets = jest.fn(
-    budgetsRepository.getCurrentBudgets.bind(budgetsRepository),
-  );
-  const spyGetBudgetSpends = jest.fn(
-    budgetsRepository.getBudgetSpends.bind(budgetsRepository),
-  );
-  const spyUpdateBudgets = jest.fn(
-    budgetsRepository.updateBudgets.bind(budgetsRepository),
-  );
-  const spyGetAccountsById = jest.fn(
-    accountsRepository.getAccountsById.bind(accountsRepository),
+  const spyGetCurrentBudgets = jest.fn(budgetsRepo.getCurrentBudgets.bind(budgetsRepo));
+  const spyGetBudgetSpends = jest.fn(budgetsRepo.getBudgetSpends.bind(budgetsRepo));
+  const spyUpdateBudgets = jest.fn(budgetsRepo.updateBudgets.bind(budgetsRepo));
+  const spyGetAccountsById = jest.fn(accountsRepo.getAccountsById.bind(accountsRepo));
+  const spyLinkBudgetsToAccount = jest.fn(
+    accountsRepo.linkAccountToBudgets.bind(accountsRepo),
   );
 
   beforeEach(async () => {
@@ -40,28 +40,53 @@ describe('budget tests', () => {
     spyGetBudgetSpends.mockClear();
     spyUpdateBudgets.mockClear();
     spyGetAccountsById.mockClear();
+    spyLinkBudgetsToAccount.mockClear();
 
-    accountsRepository.reset();
-    budgetsRepository.reset();
+    accountsRepo.reset();
+    budgetsRepo.reset();
     await setupAccountsAndBudgets();
   });
 
-  test('standard workflow with sequential checkpoints should work', async () => {
+  test('simple workflow with 1 checkpoint', async () => {
     // Arrange
     const plan = new BulkyPlan({
       // Register your bulk API dependencies
       register: {
-        getCurrentBudgets:
-          spyGetCurrentBudgets as typeof budgetsRepository.getCurrentBudgets,
-        updateBudgets: spyUpdateBudgets as typeof budgetsRepository.updateBudgets,
+        getCurrentBudgets: spyGetCurrentBudgets as typeof budgetsRepo.getCurrentBudgets,
+      },
+
+      // Define your scalar processor
+      async processor(id: number, use): Promise<number> {
+        const currentBudget = await use.getCurrentBudgets(id);
+        return currentBudget.amount;
+      },
+    });
+
+    // Act
+    const issues = await plan.run([1]);
+
+    // Assert
+    const expected = new Map([[1, 500]]);
+    expect(issues).toEqual(expected);
+
+    expect(spyGetCurrentBudgets).toHaveBeenCalledTimes(1);
+  });
+
+  test('standard bulk update workflow with sequential checkpoints', async () => {
+    // Arrange
+    const plan = new BulkyPlan({
+      // Register your bulk API dependencies
+      register: {
+        getCurrentBudgets: spyGetCurrentBudgets as typeof budgetsRepo.getCurrentBudgets,
+        updateBudgets: spyUpdateBudgets as typeof budgetsRepo.updateBudgets,
       },
 
       // Define your scalar processor
       async processor(
         request: { id: number; amount: number },
         use,
-      ): Promise<UpdateIssues | null> {
-        const issues = new UpdateIssues();
+      ): Promise<Issues | null> {
+        const issues = new Issues();
         const requestBudget = request.amount;
 
         if (requestBudget === 0) {
@@ -85,7 +110,7 @@ describe('budget tests', () => {
       },
     });
 
-    budgetsRepository.failUpdateForBudget(4);
+    budgetsRepo.failUpdateForBudget(4);
 
     // Act
     const requests = [
@@ -99,9 +124,9 @@ describe('budget tests', () => {
     // Assert
     const expected = new Map([
       [{ id: 1, amount: 1000 }, null],
-      [{ id: 2, amount: 0 }, new UpdateIssues('budget should be greater than 0')],
-      [{ id: 3, amount: 1 }, new UpdateIssues('budget must not be lowered')],
-      [{ id: 4, amount: 3000 }, new UpdateIssues('budget update failed')],
+      [{ id: 2, amount: 0 }, new Issues('budget should be greater than 0')],
+      [{ id: 3, amount: 1 }, new Issues('budget must not be lowered')],
+      [{ id: 4, amount: 3000 }, new Issues('budget update failed')],
     ]);
     expect(issues).toEqual(expected);
 
@@ -109,19 +134,21 @@ describe('budget tests', () => {
     expect(spyUpdateBudgets).toHaveBeenCalledTimes(1);
   });
 
-  test('concurrent checkpoints with Promise.all() should work', async () => {
+  test('concurrent checkpoints with Promise.all()', async () => {
     // Arrange
     const plan = new BulkyPlan({
       // Register your bulk API dependencies
       register: {
-        getCurrentBudgets:
-          spyGetCurrentBudgets as typeof budgetsRepository.getCurrentBudgets,
-        getBudgetSpends: spyGetBudgetSpends as typeof budgetsRepository.getBudgetSpends,
+        getCurrentBudgets: spyGetCurrentBudgets as typeof budgetsRepo.getCurrentBudgets,
+        getBudgetSpends: spyGetBudgetSpends as typeof budgetsRepo.getBudgetSpends,
       },
 
       // Define your scalar processor
-      async processor(id: number, use): Promise<UpdateIssues | null> {
-        const issues = new UpdateIssues();
+      processor: async function isBudgetSpendBelowLimit(
+        id: number,
+        use,
+      ): Promise<Issues | true> {
+        const issues = new Issues();
 
         const [currentBudget, budgetSpend] = await Promise.all([
           use.getCurrentBudgets(id),
@@ -135,24 +162,24 @@ describe('budget tests', () => {
           return issues;
         }
 
-        return null;
+        return true;
       },
     });
 
     // Odd numbers should fail (way over budget)
-    budgetsRepository.spendOnBudget(1, 1000);
-    budgetsRepository.spendOnBudget(3, 5000);
+    budgetsRepo.spendOnBudget(1, 1000);
+    budgetsRepo.spendOnBudget(3, 5000);
 
     // Act
     const requestIds = [1, 2, 3, 4];
     const issues = await plan.run(requestIds);
 
     // Assert
-    const expected = new Map([
-      [1, new UpdateIssues('current spend is above limit: 1000 > 500')],
-      [2, null],
-      [3, new UpdateIssues('current spend is above limit: 5000 > 1500')],
-      [4, null],
+    const expected = new Map<number, Issues | true>([
+      [1, new Issues('current spend is above limit: 1000 > 500')],
+      [2, true],
+      [3, new Issues('current spend is above limit: 5000 > 1500')],
+      [4, true],
     ]);
     expect(issues).toEqual(expected);
 
@@ -165,9 +192,8 @@ describe('budget tests', () => {
     const plan = new BulkyPlan({
       // Register your bulk API dependencies
       register: {
-        getAccountsById: spyGetAccountsById as typeof accountsRepository.getAccountsById,
-        getCurrentBudgets:
-          spyGetCurrentBudgets as typeof budgetsRepository.getCurrentBudgets,
+        getAccountsById: spyGetAccountsById as typeof accountsRepo.getAccountsById,
+        getCurrentBudgets: spyGetCurrentBudgets as typeof budgetsRepo.getCurrentBudgets,
       },
 
       // Define your scalar processor
@@ -196,5 +222,108 @@ describe('budget tests', () => {
     expect(spyGetAccountsById).toHaveBeenCalledTimes(1);
   });
 
-  test('concurrent requests that patch the same account should coalesce into 1 shared bulk input/output', async () => {});
+  test('concurrent requests that patch the same account should coalesce into 1 shared bulk input/output', async () => {
+    // Arrange
+    const plan = new BulkyPlan({
+      // Register your bulk API dependencies
+      register: {
+        getCurrentBudgets: spyGetCurrentBudgets as typeof budgetsRepo.getCurrentBudgets,
+        linkAccountToBudgets: {
+          fn: spyLinkBudgetsToAccount as typeof accountsRepo.linkAccountToBudgets,
+          transformInputs: (
+            reqs: { budgetIds: number[]; accountId: number }[],
+          ): Map<
+            { accountId: number; budgetIds: number[] },
+            { accountId: number; budgetIds: number[] }
+          > => {
+            const requestMapping: Map<
+              { accountId: number; budgetIds: number[] },
+              { accountId: number; budgetIds: number[] }
+            > = new Map();
+            const newRequestByAccount: Map<
+              number,
+              { accountId: number; budgetIds: number[] }
+            > = new Map();
+
+            for (const req of reqs) {
+              const newRequest = newRequestByAccount.get(req.accountId) ?? {
+                accountId: req.accountId,
+                budgetIds: [],
+              };
+              newRequest.budgetIds.push(...req.budgetIds);
+              newRequestByAccount.set(req.accountId, newRequest);
+              requestMapping.set(req, newRequest);
+            }
+
+            return requestMapping;
+          },
+        },
+      },
+
+      // Define your scalar processor
+      processor: async function linkAccountToBudget(
+        budgetId: number,
+        use,
+      ): Promise<boolean> {
+        const budget = await use.getCurrentBudgets(budgetId);
+
+        const result = await use.linkAccountToBudgets({
+          accountId: budget.accountId,
+          budgetIds: [budgetId],
+        });
+
+        return result;
+      },
+    });
+
+    // Act
+    const requestIds = [1, 2, 3]; // all budgets are under the same account
+    const issues = await plan.run(requestIds);
+
+    // Assert
+    const expected = new Map([
+      [1, true],
+      [2, true],
+      [3, true],
+    ]);
+    expect(issues).toEqual(expected);
+
+    expect(spyGetCurrentBudgets).toHaveBeenCalledTimes(1);
+    expect(spyGetCurrentBudgets).toHaveBeenCalledWith(requestIds);
+
+    expect(spyLinkBudgetsToAccount).toHaveBeenCalledTimes(1);
+    expect(spyLinkBudgetsToAccount).toHaveBeenCalledWith([
+      { accountId: 1, budgetIds: [1, 2, 3] },
+    ]);
+  });
+
+  test('lol', () => {
+    expect(1).toBe(1);
+
+    // function f<T extends Record<string, RegisterEntry<any, any>>>(arg: {
+    //   [K in string]: T[K] extends RegisterEntry<infer In, infer Out>
+    //     ? { fn: BulkHandlerFn<In, Out>; transformInputs: InputTransformerFn<In> }
+    //     : never;
+    // }) {}
+    //
+    // f({
+    //   funcyou: {
+    //     fn: accountsRepo.getAccountsById,
+    //     transformInputs: () => new Map<number, string>(),
+    //   },
+    // });
+
+    // function f<I, O, T extends Record<string, RegisterEntry<I, O>>>(arg: {
+    //   [K in string]: T[K] extends RegisterEntry<I, O>
+    //     ? { fn: BulkHandlerFn<I, O>; transformInputs: InputTransformerFn<I> }
+    //     : never;
+    // }) {}
+    //
+    // f({
+    //   funcyou: {
+    //     fn: accountsRepo.getAccountsById,
+    //     transformInputs: () => new Map<number, string>(),
+    //   },
+    // });
+  });
 });

@@ -13,7 +13,7 @@ export class UpdateIssues {
 
 export interface Account {
   name: string;
-  exceededBudgetsCount: number;
+  budgetIds?: number[];
 }
 
 export interface Budget {
@@ -42,6 +42,23 @@ export class AccountsRepository {
         .map((id) => [id, this.accounts.get(id) ?? null] as const)
         .filter((kv): kv is [number, Account] => !!kv[1]),
     );
+  }
+
+  async linkAccountToBudgets(
+    requests: { budgetIds: number[]; accountId: number }[],
+  ): Promise<Map<{ budgetIds: number[]; accountId: number }, boolean>> {
+    const results = new Map<{ budgetIds: number[]; accountId: number }, boolean>();
+
+    for (const req of requests) {
+      if (!this.accounts.has(req.accountId)) {
+        results.set(req, false);
+      } else {
+        results.set(req, true);
+        this.accounts.get(req.accountId)?.budgetIds?.push(...req.budgetIds);
+      }
+    }
+
+    return results;
   }
 }
 

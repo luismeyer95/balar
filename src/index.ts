@@ -1,48 +1,33 @@
-import { EventEmitter } from 'node:events';
-
-interface UpdateRequest {
-  id: number;
-  budget: number;
-}
-
-class UpdateIssues {
-  errors: string[];
-
-  constructor() {
-    this.errors = [];
-  }
-}
-
-// How to handle the API of operations
-// - either leave untouched, still with bulk semantincs. each request processor must retrieve its own data from the result.
-// - or transform into scalar APIs. lib is tasked to retrieve the queried data from the result.
-// For the latter, the scalar result must be resolvable.
-// - either the result is keyed by input, or by an id in the input
-//
-
-export type ExpandRecursively<T> = T extends object
-  ? T extends infer O
-    ? { [K in keyof O]: ExpandRecursively<O[K]> }
-    : never
-  : T;
-
 export type BulkHandlerFn<In, Out> = (request: In[]) => Promise<Map<In, Out>>;
 export type ScalarHandlerFn<In, Out> = (request: In) => Promise<Out>;
 export type HandlerQueue<In, Out> = { key: In; resolve: (ret: Out) => void }[];
 
 export type Handler<In, Out> = {
   fn: BulkHandlerFn<In, Out>;
+  transformInputs: InputTransformerFn<In>;
   queue: HandlerQueue<In, Out>;
 };
 
-export type Scalarize<T extends Record<string, BulkHandlerFn<any, any>>> = {
-  [K in keyof T]: T[K] extends BulkHandlerFn<infer In, infer Out>
+export type RegisterEntry<In, Out> =
+  | BulkHandlerFn<In, Out>
+  | {
+      fn: BulkHandlerFn<In, Out>;
+      transformInputs: InputTransformerFn<In>;
+    };
+
+export type InputTransformerFn<In> = (
+  inputs: NoInfer<In>[],
+) => Map<NoInfer<In>, NoInfer<In>>;
+
+// Derives the scalar function map from the registry map
+export type Scalarize<T extends Record<string, RegisterEntry<any, any>>> = {
+  [K in keyof T]: T[K] extends RegisterEntry<infer In, infer Out>
     ? ScalarHandlerFn<In, Out>
     : never;
 };
 
-export type Handlerize<T extends Record<string, BulkHandlerFn<any, any>>> = {
-  [K in keyof T]: T[K] extends BulkHandlerFn<infer In, infer Out>
+export type Handlerize<T extends Record<string, RegisterEntry<any, any>>> = {
+  [K in keyof T]: T[K] extends RegisterEntry<infer In, infer Out>
     ? Handler<In, Out>
     : never;
 };
@@ -50,15 +35,14 @@ export type Handlerize<T extends Record<string, BulkHandlerFn<any, any>>> = {
 export class BulkyPlan<
   MainIn,
   MainOut,
-  T extends Record<string, BulkHandlerFn<any, any>>,
+  T extends Record<string, RegisterEntry<any, any>>,
 > {
-  processor: (request: MainIn, use: Scalarize<T>) => Promise<MainOut>;
+  private processor: (request: MainIn, use: Scalarize<T>) => Promise<MainOut>;
+  private handlerRegistry: Handlerize<T>;
+  private lastSeenHandler!: Handler<any, any>;
 
-  handlerRegistry: Handlerize<T>;
-  lastSeenHandler!: Handler<any, any>;
-
-  doneCandidates = 0;
-  totalCandidates = 0;
+  private doneCandidates = 0;
+  private totalCandidates = 0;
 
   constructor({
     register,
@@ -74,17 +58,33 @@ export class BulkyPlan<
   }
 
   private registerHandlers(handlers: T) {
-    // For each type of bulk operation, we need 2 things:
+    // For each type of bulk operation, we need 3 things:
     // - the bulk function to execute when all candidates have reached the next checkpoint
     // - a promise queue to keep track of calls to the scalarized functions we provide to the processors
+    // - a merge strategy to deduplicate requests
     for (const [name, handler] of Object.entries(handlers) as Array<
       [keyof T, T[keyof T]]
     >) {
+      const queue: HandlerQueue<unknown, unknown> = [];
+
+      const { fn, transformInputs } =
+        typeof handler !== 'function'
+          ? handler
+          : {
+              fn: handler,
+              transformInputs: this.deduplicateInputs,
+            };
+
       this.handlerRegistry[name] = {
-        fn: handler,
-        queue: [],
-      } as unknown as Handlerize<T>[keyof T];
+        fn,
+        transformInputs,
+        queue,
+      } as unknown as Handlerize<T>[keyof T]; // TODO: fix types
     }
+  }
+
+  private deduplicateInputs(inputs: unknown[]): Map<unknown, unknown> {
+    return new Map(inputs.map((input) => [input, input]));
   }
 
   private maybeExecute<In, Out>(handler: Handler<In, Out>) {
@@ -105,17 +105,31 @@ export class BulkyPlan<
     }
 
     // Next checkpoint reached, run bulk operation
-    const args = this.deduplicate(handler.queue.map((item) => item.key));
-    handler.fn(args).then((result) => {
+
+    // For each queued call, the input is stored as a key in order
+    // to index out the result from the bulk call map. Since these
+    // inputs are transformed right before execution to allow for
+    // input merging, we need to apply an input key remap.
+    const inputs = handler.queue.map((item) => item.key);
+    const mappedInputs = handler.transformInputs(inputs);
+    for (const queueItem of handler.queue) {
+      const mappedInput = mappedInputs.get(queueItem.key);
+      if (mappedInput) {
+        queueItem.key = mappedInput;
+      }
+    }
+
+    // In case the transform deduplicated some inputs, the resulting
+    // map may contain duplicate values due to multiple original
+    // inputs mapping to the same transformed input.
+    const finalInputs = [...new Set(mappedInputs.values())];
+
+    handler.fn(finalInputs).then((result) => {
       for (const item of handler.queue) {
         item.resolve(result.get(item.key)!);
       }
       handler.queue = [];
     });
-  }
-
-  private deduplicate<In>(inputs: In[]): In[] {
-    return Array.from(new Set(inputs));
   }
 
   async run(requests: MainIn[]): Promise<Map<MainIn, MainOut>> {
