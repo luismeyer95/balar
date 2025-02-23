@@ -1,9 +1,4 @@
-import {
-  BulkHandlerFn,
-  BulkyPlan,
-  InputTransformerFn,
-  RegisterEntry,
-} from '../src/index';
+import { BulkHandlerFn, BulkyPlan } from '../src/index';
 import {
   Account,
   AccountsRepository,
@@ -295,35 +290,5 @@ describe('budget tests', () => {
     expect(spyLinkBudgetsToAccount).toHaveBeenCalledWith([
       { accountId: 1, budgetIds: [1, 2, 3] },
     ]);
-  });
-
-  test('lol', () => {
-    expect(1).toBe(1);
-
-    // function f<T extends Record<string, RegisterEntry<any, any>>>(arg: {
-    //   [K in string]: T[K] extends RegisterEntry<infer In, infer Out>
-    //     ? { fn: BulkHandlerFn<In, Out>; transformInputs: InputTransformerFn<In> }
-    //     : never;
-    // }) {}
-    //
-    // f({
-    //   funcyou: {
-    //     fn: accountsRepo.getAccountsById,
-    //     transformInputs: () => new Map<number, string>(),
-    //   },
-    // });
-
-    // function f<I, O, T extends Record<string, RegisterEntry<I, O>>>(arg: {
-    //   [K in string]: T[K] extends RegisterEntry<I, O>
-    //     ? { fn: BulkHandlerFn<I, O>; transformInputs: InputTransformerFn<I> }
-    //     : never;
-    // }) {}
-    //
-    // f({
-    //   funcyou: {
-    //     fn: accountsRepo.getAccountsById,
-    //     transformInputs: () => new Map<number, string>(),
-    //   },
-    // });
   });
 });

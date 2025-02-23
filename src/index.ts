@@ -151,7 +151,7 @@ export class BulkyPlan<
         // TODO: check if we should poll all handlers for execution instead.
         this.lastSeenHandler = handler;
 
-        return new Promise<unknown>((resolve) => {
+        return new Promise((resolve) => {
           handler.queue.push({ key: input, resolve });
           this.maybeExecute(handler);
         });
