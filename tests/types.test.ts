@@ -1,5 +1,6 @@
 import { AccountsRepository, BudgetsRepository } from './fakes/budget.fake';
 import { ZipToEntries, ZipToRecord } from '../src/types';
+import { Scalarize } from '../src';
 
 test('lol', () => {
   expect(1).toBe(1);
@@ -142,21 +143,50 @@ test('lol', () => {
   );
 
   // Now let's make this input a record instead
-  // We have a [RegisterEntry<In, Out>, ...]
-  // We want instead a Record<name, RegisterEntry<In, Out>>]
+  // Suppose we have a single generic type [
+  //    ['create', string, number],
+  //    ['update', number, boolean]
+  // ]
+  // If typescript can infer this type from usage, we can map
+  // it to Record<'create' | 'update', RegisterEntry<string, number> | RegisterEntry<number, boolean>
+  //
 
-  function takeRegister<T extends any[], U extends RegisterEntry<any, any>[]>(
-    series: [...{ [I in keyof T]: U }],
-  ) {}
+  type Registry<T extends any[]> = {
+    [Tup in T[number] as Tup[0]]: RegisterEntry<Tup[1], Tup[2]>;
+  };
 
-  takeRegister([
-    {
-      fn: async (nums: number[]) => new Map(nums.map((n) => [n, n])),
-      transformInputs: () => 0,
+  type Generic = [['create', string, number], ['update', number, boolean]];
+  type Res = Registry<Generic>;
+
+  type MapRegistry<R extends Record<keyof R, any>> = {
+    [I in keyof R]: R[I] extends RegisterEntry<infer I, _> ? I : never;
+  };
+
+  type MapArgs<T extends any[]> = {
+    [Tup in T[number] as Tup[0]]: Tup[1];
+  };
+  type Res2 = MapArgs<Generic>;
+
+  // Registry<T> ensures the type is correct within each entry
+  // U allows inferring the object literal to properly scalarize it!
+  function mapReg<T extends any[], U extends Record<keyof U, any>>(
+    registry: Registry<T> & U,
+  ): Scalarize<U> {}
+
+  const result = mapReg({
+    create: async (inputs: string[]): Promise<Map<string, number>> => new Map(),
+    updateU: {
+      fn: async (inputs: string[]): Promise<Map<string, number>> => new Map(),
+      transformInputs: (input: string): string => input,
     },
-    {
-      fn: new AccountsRepository().getAccountsById,
-      transformInputs: () => 0,
+    linkAccountToBudget: new AccountsRepository().linkAccountToBudgets,
+    wtf: async function (inputs: number[]): Promise<Map<number, null>> {
+      return new Map();
     },
-  ]);
+  });
+
+  result.create('1'); // (property) create: (request: string[]) => Promise<Map<string, number>>
+  result.updateU('1'); // (property) update: (request: string[]) => Promise<Map<string, number>>
+  result.linkAccountToBudget({ budgetIds: [1], accountId: 1 });
+  result.wtf(1); // (property) wtf: (request: number) => Promise<null>
 });
