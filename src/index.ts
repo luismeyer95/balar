@@ -61,7 +61,7 @@ export class BulkyPlan<
     // For each type of bulk operation, we need 3 things:
     // - the bulk function to execute when all candidates have reached the next checkpoint
     // - a promise queue to keep track of calls to the scalarized functions we provide to the processors
-    // - a merge strategy to deduplicate requests
+    // - a transform strategy (ex: to merge inputs that != but can still be merged)
     for (const [name, handler] of Object.entries(handlers) as Array<
       [keyof T, T[keyof T]]
     >) {
