@@ -1,4 +1,4 @@
-import { BulkHandlerFn, BulkyPlan } from '../src/index';
+import { BulkFn, BulkyPlan, def } from '../src/index';
 import {
   Account,
   AccountsRepository,
@@ -47,7 +47,9 @@ describe('budget tests', () => {
     const plan = new BulkyPlan({
       // Register your bulk API dependencies
       register: {
-        getCurrentBudgets: spyGetCurrentBudgets as typeof budgetsRepo.getCurrentBudgets,
+        getCurrentBudgets: def(
+          spyGetCurrentBudgets as typeof budgetsRepo.getCurrentBudgets,
+        ),
       },
 
       // Define your scalar processor
@@ -72,8 +74,10 @@ describe('budget tests', () => {
     const plan = new BulkyPlan({
       // Register your bulk API dependencies
       register: {
-        getCurrentBudgets: spyGetCurrentBudgets as typeof budgetsRepo.getCurrentBudgets,
-        updateBudgets: spyUpdateBudgets as typeof budgetsRepo.updateBudgets,
+        getCurrentBudgets: def(
+          spyGetCurrentBudgets as typeof budgetsRepo.getCurrentBudgets,
+        ),
+        updateBudgets: def(spyUpdateBudgets as typeof budgetsRepo.updateBudgets),
       },
 
       // Define your scalar processor
@@ -134,8 +138,10 @@ describe('budget tests', () => {
     const plan = new BulkyPlan({
       // Register your bulk API dependencies
       register: {
-        getCurrentBudgets: spyGetCurrentBudgets as typeof budgetsRepo.getCurrentBudgets,
-        getBudgetSpends: spyGetBudgetSpends as typeof budgetsRepo.getBudgetSpends,
+        getCurrentBudgets: def(
+          spyGetCurrentBudgets as typeof budgetsRepo.getCurrentBudgets,
+        ),
+        getBudgetSpends: def(spyGetBudgetSpends as typeof budgetsRepo.getBudgetSpends),
       },
 
       // Define your scalar processor
@@ -187,8 +193,10 @@ describe('budget tests', () => {
     const plan = new BulkyPlan({
       // Register your bulk API dependencies
       register: {
-        getAccountsById: spyGetAccountsById as typeof accountsRepo.getAccountsById,
-        getCurrentBudgets: spyGetCurrentBudgets as typeof budgetsRepo.getCurrentBudgets,
+        getAccountsById: def(spyGetAccountsById as typeof accountsRepo.getAccountsById),
+        getCurrentBudgets: def(
+          spyGetCurrentBudgets as typeof budgetsRepo.getCurrentBudgets,
+        ),
       },
 
       // Define your scalar processor
@@ -222,37 +230,30 @@ describe('budget tests', () => {
     const plan = new BulkyPlan({
       // Register your bulk API dependencies
       register: {
-        getCurrentBudgets: spyGetCurrentBudgets as typeof budgetsRepo.getCurrentBudgets,
-        linkAccountToBudgets: {
+        getCurrentBudgets: def(
+          spyGetCurrentBudgets as typeof budgetsRepo.getCurrentBudgets,
+        ),
+        linkAccountToBudgets: def({
           fn: spyLinkBudgetsToAccount as typeof accountsRepo.linkAccountToBudgets,
-          transformInputs: (
-            reqs: { budgetIds: number[]; accountId: number }[],
-          ): Map<
-            { accountId: number; budgetIds: number[] },
-            { accountId: number; budgetIds: number[] }
-          > => {
-            const requestMapping: Map<
-              { accountId: number; budgetIds: number[] },
-              { accountId: number; budgetIds: number[] }
-            > = new Map();
-            const newRequestByAccount: Map<
-              number,
-              { accountId: number; budgetIds: number[] }
-            > = new Map();
+          transformInputs: (reqs) => {
+            type Req = (typeof reqs)[0];
+            const requestMapping: Map<Req, Req> = new Map();
+            const newRequestByAccount: Map<number, Req> = new Map();
 
             for (const req of reqs) {
               const newRequest = newRequestByAccount.get(req.accountId) ?? {
                 accountId: req.accountId,
                 budgetIds: [],
               };
-              newRequest.budgetIds.push(...req.budgetIds);
               newRequestByAccount.set(req.accountId, newRequest);
+
+              newRequest.budgetIds.push(...req.budgetIds);
               requestMapping.set(req, newRequest);
             }
 
             return requestMapping;
           },
-        },
+        }),
       },
 
       // Define your scalar processor

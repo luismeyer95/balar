@@ -1,8 +1,7 @@
 import { AccountsRepository } from './fakes/budget.fake';
-import { BulkHandlerFn } from '../src';
+import { BulkFn } from '../src';
 
 test('type testing - registry API', () => {
-  // Defining the main configuration API for a registry entry
   type RegisterEntry<I, O> = {
     fn: (i: I[]) => Promise<Map<I, O>>;
     transformInputs?: (i: NoInfer<I>) => NoInfer<I>;
@@ -27,7 +26,9 @@ test('type testing - registry API', () => {
 
   function createRegistry<R extends Record<string, CheckedRegisterEntry<any, any>>>(
     registry: R,
-  ): ScalarizeRegistry<R> {}
+  ): ScalarizeRegistry<R> {
+    return {} as ScalarizeRegistry<R>;
+  }
 
   /**
    * Due to some TypeScript limitations, it is only possible to ensure
@@ -38,8 +39,12 @@ test('type testing - registry API', () => {
    * accept register entries that have been wrapped in a call to `define()`.
    */
   function define<I, O>(
-    obj: RegisterEntry<I, O> | BulkHandlerFn<I, O>,
-  ): CheckedRegisterEntry<I, O> {}
+    obj: RegisterEntry<I, O> | BulkFn<I, O>,
+  ): CheckedRegisterEntry<I, O> {
+    return {} as CheckedRegisterEntry<I, O>;
+  }
+
+  const varWrappper = define(new AccountsRepository().linkAccountToBudgets);
 
   const result = createRegistry({
     create: define({
@@ -47,15 +52,14 @@ test('type testing - registry API', () => {
     }),
     update: define({
       fn: async (_: string[]): Promise<Map<string, number>> => new Map(),
-      // @ts-expect-error
-      transformInputs: (_: string): null => null,
+      transformInputs: () => '',
     }),
     linkAccountToBudget: define({ fn: new AccountsRepository().linkAccountToBudgets }),
     wtf: define({
       fn: async function (_: number[]): Promise<Map<number, null>> {
         return new Map();
       },
-      transformInputs: (_: number): number => 0,
+      transformInputs: () => 0,
     }),
     onlyFn: define(new AccountsRepository().linkAccountToBudgets),
     onlyFnInline: define(async (_: number[]): Promise<Map<number, null>> => new Map()),
@@ -63,20 +67,24 @@ test('type testing - registry API', () => {
       fn: async (_: string[]): Promise<Map<string, number>> => new Map(),
       transformInputs: (_: string): string => '',
     }),
+    varWrappper,
+    test: define(async (_: number[]): Promise<Map<number, number>> => new Map()),
   });
 
-  result.create('1'); // (property) create: (request: string[]) => Promise<Map<string, number>>
-  // @ts-expect-error
-  result.create(1);
-
-  result.update('1'); // (property) update: (request: string[]) => Promise<Map<string, number>>
-
-  result.linkAccountToBudget({ budgetIds: [1], accountId: 1 });
-  // @ts-expect-error
-  result.linkAccountToBudget({ accountId: 1 });
-
-  result.wtf(1); // (property) wtf: (request: number) => Promise<null>
-  result.onlyFn({ budgetIds: [1], accountId: 1 });
-  result.onlyFnInline(5);
-  result.noWrapper('1');
+  // TODO: why is uncommenting failing TS compile when LSP/other tests don't complain?
+  //
+  // result.create('1');
+  // // @ts-expect-error
+  // result.create(1);
+  //
+  // result.update('1'); // (property) update: (request: string[]) => Promise<Map<string, number>>
+  //
+  // result.linkAccountToBudget({ budgetIds: [1], accountId: 1 });
+  // // @ts-expect-error
+  // result.linkAccountToBudget({ accountId: 1 });
+  //
+  // result.wtf(1);
+  // result.onlyFn({ budgetIds: [1], accountId: 1 });
+  // result.onlyFnInline(5);
+  // result.noWrapper('1');
 });

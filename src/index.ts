@@ -1,45 +1,63 @@
-export type BulkHandlerFn<In, Out> = (request: In[]) => Promise<Map<In, Out>>;
-export type ScalarHandlerFn<In, Out> = (request: In) => Promise<Out>;
+export type BulkFn<In, Out> = (request: In[]) => Promise<Map<In, Out>>;
+export type TransformInputsFn<In> = (_: NoInfer<In>[]) => Map<NoInfer<In>, NoInfer<In>>;
+export type ScalarFn<In, Out> = (request: In) => Promise<Out>;
 export type HandlerQueue<In, Out> = { key: In; resolve: (ret: Out) => void }[];
 
-export type Handler<In, Out> = {
-  fn: BulkHandlerFn<In, Out>;
-  transformInputs: InputTransformerFn<In>;
+// Configuration API for a registry entry
+export type RegistryEntry<In, Out> = {
+  fn: BulkFn<In, Out>;
+  transformInputs?: TransformInputsFn<In>;
+};
+type CheckedRegistryEntry<I, O> = RegistryEntry<I, O> & { __brand: 'checked' };
+export type InternalRegistryEntry<In, Out> = RegistryEntry<In, Out> & {
   queue: HandlerQueue<In, Out>;
 };
 
-export type RegisterEntry<In, Out> =
-  | BulkHandlerFn<In, Out>
-  | {
-      fn: BulkHandlerFn<In, Out>;
-      transformInputs: InputTransformerFn<In>;
-    };
-
-export type InputTransformerFn<In> = (
-  inputs: NoInfer<In>[],
-) => Map<NoInfer<In>, NoInfer<In>>;
-
-// Derives the scalar function map from the registry map
-export type Scalarize<T extends Record<string, RegisterEntry<any, any>>> = {
-  [K in keyof T]: T[K] extends RegisterEntry<infer In, infer Out>
-    ? ScalarHandlerFn<In, Out>
+export type ToInternalRegistry<T extends Record<string, RegistryEntry<any, any>>> = {
+  [K in keyof T]: T[K] extends {
+    fn: (inputs: Array<infer I>) => Promise<Map<infer I, infer O>>;
+  }
+    ? InternalRegistryEntry<I, O>
     : never;
 };
 
-export type Handlerize<T extends Record<string, RegisterEntry<any, any>>> = {
-  [K in keyof T]: T[K] extends RegisterEntry<infer In, infer Out>
-    ? Handler<In, Out>
-    : never;
+/**
+ * Takes a bulk function and converts its signature to a scalar function.
+ */
+type ScalarizeFn<F> = F extends (input: Array<infer I>) => Promise<Map<infer I, infer O>>
+  ? (input: I) => Promise<O>
+  : never;
+
+/**
+ * Takes a registry and converts it to a record of scalar functions.
+ */
+type ScalarizeRegistry<R extends Record<string, RegistryEntry<any, any>>> = {
+  [K in keyof R]: ScalarizeFn<R[K]['fn']>;
 };
+
+/**
+ * Due to some TypeScript limitations, it is only possible to ensure
+ * correct type-checking at the registry entry level if each entry
+ * configuration is wrapped in an identity function like this one.
+ *
+ * As an added layer of type-safety, the registry's API is made to only
+ * accept registry entries that have been wrapped in a call to `define()`.
+ */
+export function def<I, O>(
+  entry: RegistryEntry<I, O> | BulkFn<I, O>,
+): CheckedRegistryEntry<I, O> {
+  const registryEntry = 'fn' in entry ? entry : { fn: entry };
+  return registryEntry as CheckedRegistryEntry<I, O>;
+}
 
 export class BulkyPlan<
   MainIn,
   MainOut,
-  T extends Record<string, RegisterEntry<any, any>>,
+  R extends Record<string, CheckedRegistryEntry<any, any>>,
 > {
-  private processor: (request: MainIn, use: Scalarize<T>) => Promise<MainOut>;
-  private handlerRegistry: Handlerize<T>;
-  private lastSeenHandler!: Handler<any, any>;
+  private processor: (request: MainIn, use: ScalarizeRegistry<R>) => Promise<MainOut>;
+  private handlerRegistry: ToInternalRegistry<R>;
+  private lastSeenHandler!: InternalRegistryEntry<any, any>;
 
   private doneCandidates = 0;
   private totalCandidates = 0;
@@ -48,46 +66,37 @@ export class BulkyPlan<
     register,
     processor,
   }: {
-    register: T;
-    processor: (request: MainIn, use: Scalarize<NoInfer<T>>) => Promise<MainOut>;
+    register: R;
+    processor: (request: MainIn, use: ScalarizeRegistry<NoInfer<R>>) => Promise<MainOut>;
   }) {
     this.processor = processor;
-    this.handlerRegistry = {} as Handlerize<T>;
+    this.handlerRegistry = {} as ToInternalRegistry<R>;
 
     this.registerHandlers(register);
   }
 
-  private registerHandlers(handlers: T) {
+  private registerHandlers(handlers: R) {
     // For each type of bulk operation, we need 3 things:
     // - the bulk function to execute when all candidates have reached the next checkpoint
     // - a promise queue to keep track of calls to the scalarized functions we provide to the processors
     // - a transform strategy (ex: to merge inputs that != but can still be merged)
-    for (const [name, handler] of Object.entries(handlers) as Array<
-      [keyof T, T[keyof T]]
+    for (const [name, registryEntry] of Object.entries(handlers) as Array<
+      [keyof R, R[keyof R]]
     >) {
       const queue: HandlerQueue<unknown, unknown> = [];
 
-      const { fn, transformInputs } =
-        typeof handler !== 'function'
-          ? handler
-          : {
-              fn: handler,
-              transformInputs: this.deduplicateInputs,
-            };
-
       this.handlerRegistry[name] = {
-        fn,
-        transformInputs,
+        ...registryEntry,
         queue,
-      } as unknown as Handlerize<T>[keyof T]; // TODO: fix types
+      } as unknown as ToInternalRegistry<R>[keyof R]; // TODO: fix types
     }
   }
 
-  private deduplicateInputs(inputs: unknown[]): Map<unknown, unknown> {
+  private deduplicateInputs<In, Out>(inputs: In[]): Map<In, In> {
     return new Map(inputs.map((input) => [input, input]));
   }
 
-  private maybeExecute<In, Out>(handler: Handler<In, Out>) {
+  private maybeExecute<In, Out>(handler: InternalRegistryEntry<In, Out>) {
     // Checks if all candidates have reached the next checkpoint.
 
     // If all concurrent executions at this time have either
@@ -111,7 +120,8 @@ export class BulkyPlan<
     // inputs are transformed right before execution to allow for
     // input merging, we need to apply an input key remap.
     const inputs = handler.queue.map((item) => item.key);
-    const mappedInputs = handler.transformInputs(inputs);
+    const mappedInputs =
+      handler.transformInputs?.(inputs) ?? this.deduplicateInputs(inputs);
     for (const queueItem of handler.queue) {
       const mappedInput = mappedInputs.get(queueItem.key);
       if (mappedInput) {
@@ -133,13 +143,13 @@ export class BulkyPlan<
   }
 
   async run(requests: MainIn[]): Promise<Map<MainIn, MainOut>> {
-    const processorHandlers = {} as Scalarize<T>;
+    const processorHandlers = {} as ScalarizeRegistry<R>;
 
     // Initialize the target total. Used to track the progress towards each
     // checkpoint during the concurrent executions.
     this.totalCandidates = requests.length;
 
-    for (const handlerName of Object.keys(this.handlerRegistry) as Array<keyof T>) {
+    for (const handlerName of Object.keys(this.handlerRegistry) as Array<keyof R>) {
       const handler = this.handlerRegistry[handlerName];
 
       const scalarFn = async (input: unknown): Promise<unknown> => {
@@ -157,7 +167,7 @@ export class BulkyPlan<
         });
       };
 
-      processorHandlers[handlerName] = scalarFn as Scalarize<T>[keyof T];
+      processorHandlers[handlerName] = scalarFn as ScalarizeRegistry<R>[keyof R];
     }
 
     const executions = requests.map(async (request) => {
