@@ -1,4 +1,4 @@
-import { BulkFn, BulkyPlan, def } from '../src/index';
+import { BulkRegistry, BulkyPlan, def } from '../src/index';
 import {
   Account,
   AccountsRepository,
@@ -44,14 +44,15 @@ describe('budget tests', () => {
 
   test('simple workflow with 1 checkpoint', async () => {
     // Arrange
-    const plan = new BulkyPlan({
+    const registry = new BulkRegistry({
       // Register your bulk API dependencies
-      register: {
-        getCurrentBudgets: def(
-          spyGetCurrentBudgets as typeof budgetsRepo.getCurrentBudgets,
-        ),
-      },
+      getCurrentBudgets: def(
+        spyGetCurrentBudgets as typeof budgetsRepo.getCurrentBudgets,
+      ),
+    });
 
+    const plan = new BulkyPlan({
+      registry,
       // Define your scalar processor
       async processor(id: number, use): Promise<number> {
         const currentBudget = await use.getCurrentBudgets(id);
@@ -71,15 +72,16 @@ describe('budget tests', () => {
 
   test('standard bulk update workflow with sequential checkpoints', async () => {
     // Arrange
-    const plan = new BulkyPlan({
+    const registry = new BulkRegistry({
       // Register your bulk API dependencies
-      register: {
-        getCurrentBudgets: def(
-          spyGetCurrentBudgets as typeof budgetsRepo.getCurrentBudgets,
-        ),
-        updateBudgets: def(spyUpdateBudgets as typeof budgetsRepo.updateBudgets),
-      },
+      getCurrentBudgets: def(
+        spyGetCurrentBudgets as typeof budgetsRepo.getCurrentBudgets,
+      ),
+      updateBudgets: def(spyUpdateBudgets as typeof budgetsRepo.updateBudgets),
+    });
 
+    const plan = new BulkyPlan({
+      registry,
       // Define your scalar processor
       async processor(
         request: { id: number; amount: number },
@@ -135,15 +137,16 @@ describe('budget tests', () => {
 
   test('concurrent checkpoints with Promise.all()', async () => {
     // Arrange
-    const plan = new BulkyPlan({
+    const registry = new BulkRegistry({
       // Register your bulk API dependencies
-      register: {
-        getCurrentBudgets: def(
-          spyGetCurrentBudgets as typeof budgetsRepo.getCurrentBudgets,
-        ),
-        getBudgetSpends: def(spyGetBudgetSpends as typeof budgetsRepo.getBudgetSpends),
-      },
+      getCurrentBudgets: def(
+        spyGetCurrentBudgets as typeof budgetsRepo.getCurrentBudgets,
+      ),
+      getBudgetSpends: def(spyGetBudgetSpends as typeof budgetsRepo.getBudgetSpends),
+    });
 
+    const plan = new BulkyPlan({
+      registry,
       // Define your scalar processor
       processor: async function isBudgetSpendBelowLimit(
         id: number,
@@ -190,14 +193,16 @@ describe('budget tests', () => {
 
   test('concurrent reads of the same account should coalesce into 1 shared bulk input/output', async () => {
     // Arrange
-    const plan = new BulkyPlan({
+    const registry = new BulkRegistry({
       // Register your bulk API dependencies
-      register: {
-        getAccountsById: def(spyGetAccountsById as typeof accountsRepo.getAccountsById),
-        getCurrentBudgets: def(
-          spyGetCurrentBudgets as typeof budgetsRepo.getCurrentBudgets,
-        ),
-      },
+      getAccountsById: def(spyGetAccountsById as typeof accountsRepo.getAccountsById),
+      getCurrentBudgets: def(
+        spyGetCurrentBudgets as typeof budgetsRepo.getCurrentBudgets,
+      ),
+    });
+
+    const plan = new BulkyPlan({
+      registry,
 
       // Define your scalar processor
       async processor(budgetId: number, use): Promise<Account> {
@@ -227,34 +232,36 @@ describe('budget tests', () => {
 
   test('concurrent requests that patch the same account should coalesce into 1 shared bulk input/output', async () => {
     // Arrange
-    const plan = new BulkyPlan({
+    const registry = new BulkRegistry({
       // Register your bulk API dependencies
-      register: {
-        getCurrentBudgets: def(
-          spyGetCurrentBudgets as typeof budgetsRepo.getCurrentBudgets,
-        ),
-        linkAccountToBudgets: def({
-          fn: spyLinkBudgetsToAccount as typeof accountsRepo.linkAccountToBudgets,
-          transformInputs: (reqs) => {
-            type Req = (typeof reqs)[0];
-            const requestMapping: Map<Req, Req> = new Map();
-            const newRequestByAccount: Map<number, Req> = new Map();
+      getCurrentBudgets: def(
+        spyGetCurrentBudgets as typeof budgetsRepo.getCurrentBudgets,
+      ),
+      linkAccountToBudgets: def({
+        fn: spyLinkBudgetsToAccount as typeof accountsRepo.linkAccountToBudgets,
+        transformInputs: (reqs) => {
+          type Req = (typeof reqs)[0];
+          const requestMapping: Map<Req, Req> = new Map();
+          const newRequestByAccount: Map<number, Req> = new Map();
 
-            for (const req of reqs) {
-              const newRequest = newRequestByAccount.get(req.accountId) ?? {
-                accountId: req.accountId,
-                budgetIds: [],
-              };
-              newRequestByAccount.set(req.accountId, newRequest);
+          for (const req of reqs) {
+            const newRequest = newRequestByAccount.get(req.accountId) ?? {
+              accountId: req.accountId,
+              budgetIds: [],
+            };
+            newRequestByAccount.set(req.accountId, newRequest);
 
-              newRequest.budgetIds.push(...req.budgetIds);
-              requestMapping.set(req, newRequest);
-            }
+            newRequest.budgetIds.push(...req.budgetIds);
+            requestMapping.set(req, newRequest);
+          }
 
-            return requestMapping;
-          },
-        }),
-      },
+          return requestMapping;
+        },
+      }),
+    });
+
+    const plan = new BulkyPlan({
+      registry,
 
       // Define your scalar processor
       processor: async function linkAccountToBudget(

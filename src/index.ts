@@ -1,16 +1,15 @@
 export type BulkFn<In, Out> = (request: In[]) => Promise<Map<In, Out>>;
 export type TransformInputsFn<In> = (_: NoInfer<In>[]) => Map<NoInfer<In>, NoInfer<In>>;
 export type ScalarFn<In, Out> = (request: In) => Promise<Out>;
-export type HandlerQueue<In, Out> = { key: In; resolve: (ret: Out) => void }[];
+export type ExecutionsBuf<In, Out> = { key: In; resolve: (ret: Out) => void }[];
 
-// Configuration API for a registry entry
 export type RegistryEntry<In, Out> = {
   fn: BulkFn<In, Out>;
   transformInputs?: TransformInputsFn<In>;
 };
 type CheckedRegistryEntry<I, O> = RegistryEntry<I, O> & { __brand: 'checked' };
 export type InternalRegistryEntry<In, Out> = RegistryEntry<In, Out> & {
-  queue: HandlerQueue<In, Out>;
+  executions: ExecutionsBuf<In, Out>;
 };
 
 export type ToInternalRegistry<T extends Record<string, RegistryEntry<any, any>>> = {
@@ -20,6 +19,10 @@ export type ToInternalRegistry<T extends Record<string, RegistryEntry<any, any>>
     ? InternalRegistryEntry<I, O>
     : never;
 };
+
+export class BulkRegistry<R extends Record<string, CheckedRegistryEntry<any, any>>> {
+  constructor(public readonly entries: R) {}
+}
 
 /**
  * Takes a bulk function and converts its signature to a scalar function.
@@ -56,38 +59,38 @@ export class BulkyPlan<
   R extends Record<string, CheckedRegistryEntry<any, any>>,
 > {
   private processor: (request: MainIn, use: ScalarizeRegistry<R>) => Promise<MainOut>;
-  private handlerRegistry: ToInternalRegistry<R>;
-  private lastSeenHandler!: InternalRegistryEntry<any, any>;
+  private internalRegistry: ToInternalRegistry<R>;
+  private lastSeenBulkOp!: InternalRegistryEntry<any, any>;
 
   private doneCandidates = 0;
   private totalCandidates = 0;
 
   constructor({
-    register,
+    registry,
     processor,
   }: {
-    register: R;
+    registry: BulkRegistry<R>;
     processor: (request: MainIn, use: ScalarizeRegistry<NoInfer<R>>) => Promise<MainOut>;
   }) {
     this.processor = processor;
-    this.handlerRegistry = {} as ToInternalRegistry<R>;
+    this.internalRegistry = {} as ToInternalRegistry<R>;
 
-    this.registerHandlers(register);
+    this.registerInternal(registry.entries);
   }
 
-  private registerHandlers(handlers: R) {
+  private registerInternal(registry: R) {
     // For each type of bulk operation, we need 3 things:
     // - the bulk function to execute when all candidates have reached the next checkpoint
     // - a promise queue to keep track of calls to the scalarized functions we provide to the processors
     // - a transform strategy (ex: to merge inputs that != but can still be merged)
-    for (const [name, registryEntry] of Object.entries(handlers) as Array<
+    for (const [name, registryEntry] of Object.entries(registry) as Array<
       [keyof R, R[keyof R]]
     >) {
-      const queue: HandlerQueue<unknown, unknown> = [];
+      const executions: ExecutionsBuf<unknown, unknown> = [];
 
-      this.handlerRegistry[name] = {
+      this.internalRegistry[name] = {
         ...registryEntry,
-        queue,
+        executions: executions,
       } as unknown as ToInternalRegistry<R>[keyof R]; // TODO: fix types
     }
   }
@@ -96,7 +99,7 @@ export class BulkyPlan<
     return new Map(inputs.map((input) => [input, input]));
   }
 
-  private maybeExecute<In, Out>(handler: InternalRegistryEntry<In, Out>) {
+  private maybeExecute<In, Out>(op: InternalRegistryEntry<In, Out>) {
     // Checks if all candidates have reached the next checkpoint.
 
     // If all concurrent executions at this time have either
@@ -104,12 +107,12 @@ export class BulkyPlan<
     // - or completed execution by returning
     // Then, we can execute the bulk function.
 
-    if (handler.queue.length + this.doneCandidates !== this.totalCandidates) {
+    if (op.executions.length + this.doneCandidates !== this.totalCandidates) {
       // Not all candidates have reached the next checkpoint
       return;
     }
 
-    if (handler.queue.length === 0) {
+    if (op.executions.length === 0) {
       return;
     }
 
@@ -119,13 +122,12 @@ export class BulkyPlan<
     // to index out the result from the bulk call map. Since these
     // inputs are transformed right before execution to allow for
     // input merging, we need to apply an input key remap.
-    const inputs = handler.queue.map((item) => item.key);
-    const mappedInputs =
-      handler.transformInputs?.(inputs) ?? this.deduplicateInputs(inputs);
-    for (const queueItem of handler.queue) {
-      const mappedInput = mappedInputs.get(queueItem.key);
+    const inputs = op.executions.map((item) => item.key);
+    const mappedInputs = op.transformInputs?.(inputs) ?? this.deduplicateInputs(inputs);
+    for (const execItem of op.executions) {
+      const mappedInput = mappedInputs.get(execItem.key);
       if (mappedInput) {
-        queueItem.key = mappedInput;
+        execItem.key = mappedInput;
       }
     }
 
@@ -134,23 +136,23 @@ export class BulkyPlan<
     // inputs mapping to the same transformed input.
     const finalInputs = [...new Set(mappedInputs.values())];
 
-    handler.fn(finalInputs).then((result) => {
-      for (const item of handler.queue) {
+    op.fn(finalInputs).then((result) => {
+      for (const item of op.executions) {
         item.resolve(result.get(item.key)!);
       }
-      handler.queue = [];
+      op.executions = [];
     });
   }
 
   async run(requests: MainIn[]): Promise<Map<MainIn, MainOut>> {
-    const processorHandlers = {} as ScalarizeRegistry<R>;
+    const scalarHandlers = {} as ScalarizeRegistry<R>;
 
     // Initialize the target total. Used to track the progress towards each
     // checkpoint during the concurrent executions.
     this.totalCandidates = requests.length;
 
-    for (const handlerName of Object.keys(this.handlerRegistry) as Array<keyof R>) {
-      const handler = this.handlerRegistry[handlerName];
+    for (const entryName of Object.keys(this.internalRegistry) as Array<keyof R>) {
+      const bulkOp = this.internalRegistry[entryName];
 
       const scalarFn = async (input: unknown): Promise<unknown> => {
         // When a scalar function is called, we need to keep track of which handler it came from.
@@ -159,26 +161,23 @@ export class BulkyPlan<
         // be the one from the last registered scalar call.
         //
         // TODO: check if we should poll all handlers for execution instead.
-        this.lastSeenHandler = handler;
+        this.lastSeenBulkOp = bulkOp;
 
         return new Promise((resolve) => {
-          handler.queue.push({ key: input, resolve });
-          this.maybeExecute(handler);
+          bulkOp.executions.push({ key: input, resolve });
+          this.maybeExecute(bulkOp);
         });
       };
 
-      processorHandlers[handlerName] = scalarFn as ScalarizeRegistry<R>[keyof R];
+      scalarHandlers[entryName] = scalarFn as ScalarizeRegistry<R>[keyof R];
     }
 
     const executions = requests.map(async (request) => {
-      const result = await this.processor(request, processorHandlers);
+      const result = await this.processor(request, scalarHandlers);
 
       if (result) {
         this.doneCandidates += 1;
-        this.maybeExecute(this.lastSeenHandler);
-        // for (const handler of Object.values(this.handlerRegistry)) {
-        //   this.maybeExecute(handler);
-        // }
+        this.maybeExecute(this.lastSeenBulkOp);
       }
 
       return result;
