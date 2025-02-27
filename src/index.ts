@@ -1,3 +1,5 @@
+import { AsyncLocalStorage } from 'async_hooks';
+
 export type BulkFn<In, Out> = (request: In[]) => Promise<Map<In, Out>>;
 export type TransformInputsFn<In> = (_: NoInfer<In>[]) => Map<NoInfer<In>, NoInfer<In>>;
 export type ScalarFn<In, Out> = (request: In) => Promise<Out>;
@@ -9,6 +11,7 @@ export type RegistryEntry<In, Out> = {
 };
 type CheckedRegistryEntry<I, O> = RegistryEntry<I, O> & { __brand: 'checked' };
 export type InternalRegistryEntry<In, Out> = RegistryEntry<In, Out> & {
+  scalarHandler: ScalarFn<In, Out>;
   executions: ExecutionsBuf<In, Out>;
 };
 
@@ -58,31 +61,33 @@ export class BulkyPlan<
   MainOut,
   R extends Record<string, CheckedRegistryEntry<any, any>>,
 > {
-  private processor: (request: MainIn, use: ScalarizeRegistry<R>) => Promise<MainOut>;
-  private internalRegistry: ToInternalRegistry<R>;
-  private lastSeenBulkOp!: InternalRegistryEntry<any, any>;
+  processor: (request: MainIn) => Promise<MainOut>;
+  internalRegistry!: ToInternalRegistry<R>;
+  lastSeenBulkOp!: InternalRegistryEntry<any, any>;
 
-  private doneCandidates = 0;
-  private totalCandidates = 0;
+  doneCandidates = 0;
+  totalCandidates = 0;
 
   constructor({
     registry,
     processor,
   }: {
     registry: BulkRegistry<R>;
-    processor: (request: MainIn, use: ScalarizeRegistry<NoInfer<R>>) => Promise<MainOut>;
+    processor: (request: MainIn) => Promise<MainOut>;
   }) {
     this.processor = processor;
-    this.internalRegistry = {} as ToInternalRegistry<R>;
-
     this.registerInternal(registry.entries);
   }
 
-  private registerInternal(registry: R) {
+  registerInternal(registry: R) {
+    this.internalRegistry = {} as ToInternalRegistry<R>;
     // For each type of bulk operation, we need 3 things:
     // - the bulk function to execute when all candidates have reached the next checkpoint
     // - a promise queue to keep track of calls to the scalarized functions we provide to the processors
     // - a transform strategy (ex: to merge inputs that != but can still be merged)
+
+    const scalarHandlers = this.createContextualScalarHandlers(registry);
+
     for (const [name, registryEntry] of Object.entries(registry) as Array<
       [keyof R, R[keyof R]]
     >) {
@@ -91,15 +96,16 @@ export class BulkyPlan<
       this.internalRegistry[name] = {
         ...registryEntry,
         executions: executions,
+        scalarHandler: scalarHandlers[name],
       } as unknown as ToInternalRegistry<R>[keyof R]; // TODO: fix types
     }
   }
 
-  private deduplicateInputs<In, Out>(inputs: In[]): Map<In, In> {
+  deduplicateInputs<In, Out>(inputs: In[]): Map<In, In> {
     return new Map(inputs.map((input) => [input, input]));
   }
 
-  private maybeExecute<In, Out>(op: InternalRegistryEntry<In, Out>) {
+  maybeExecute<In, Out>(op: InternalRegistryEntry<In, Out>) {
     // Checks if all candidates have reached the next checkpoint.
 
     // If all concurrent executions at this time have either
@@ -145,15 +151,36 @@ export class BulkyPlan<
   }
 
   async run(requests: MainIn[]): Promise<Map<MainIn, MainOut>> {
-    const scalarHandlers = {} as ScalarizeRegistry<R>;
-
     // Initialize the target total. Used to track the progress towards each
     // checkpoint during the concurrent executions.
     this.totalCandidates = requests.length;
 
-    for (const entryName of Object.keys(this.internalRegistry) as Array<keyof R>) {
-      const bulkOp = this.internalRegistry[entryName];
+    const results = await STORE.run(this as any /* TODO FIX */, async () => {
+      const executions = requests.map(async (request) => {
+        const result = await this.processor(request);
 
+        if (result) {
+          this.doneCandidates += 1;
+          this.maybeExecute(this.lastSeenBulkOp);
+        }
+
+        return result;
+      });
+
+      return Promise.all(executions);
+    });
+
+    const resultsByKey = new Map(
+      results.map((result, index) => [requests[index], result]),
+    );
+
+    return resultsByKey;
+  }
+
+  createContextualScalarHandlers(registry: R): ScalarizeRegistry<R> {
+    const scalarHandlers = {} as ScalarizeRegistry<R>;
+
+    for (const entryName of Object.keys(registry) as Array<keyof R>) {
       const scalarFn = async (input: unknown): Promise<unknown> => {
         // When a scalar function is called, we need to keep track of which handler it came from.
         // If an execution returns when all other concurrent executions are awaiting the next
@@ -161,6 +188,7 @@ export class BulkyPlan<
         // be the one from the last registered scalar call.
         //
         // TODO: check if we should poll all handlers for execution instead.
+        const bulkOp = this.internalRegistry[entryName];
         this.lastSeenBulkOp = bulkOp;
 
         return new Promise((resolve) => {
@@ -172,22 +200,76 @@ export class BulkyPlan<
       scalarHandlers[entryName] = scalarFn as ScalarizeRegistry<R>[keyof R];
     }
 
-    const executions = requests.map(async (request) => {
-      const result = await this.processor(request, scalarHandlers);
+    return scalarHandlers;
+  }
+}
 
-      if (result) {
-        this.doneCandidates += 1;
-        this.maybeExecute(this.lastSeenBulkOp);
+////////////////////////////////////////
+
+// - create scalar registry: takes the bulk op configs and stores a template (BulkReg?)
+// or generator for the init of the async context of an execution.
+// - execute: inits the async context with template (BulkPlan(reg, processor)?) and runs the bulk op
+// THIS CONTEXT COULD BE A BULK PLAN WITHOUT MANY CHANGES!
+
+let globalRegistryTemplate: BulkRegistry<
+  Record<string, CheckedRegistryEntry<unknown, unknown>>
+> | null;
+
+const STORE = new AsyncLocalStorage<
+  BulkyPlan<unknown, unknown, Record<string, CheckedRegistryEntry<unknown, unknown>>>
+>();
+
+export function scalarize<R extends Record<string, CheckedRegistryEntry<any, any>>>(
+  bulkOpRegistry: R,
+): ScalarizeRegistry<R> {
+  // Store the registry as a global to use as template.
+  // It will then be used to instantiate bulk plans lazily on execute
+  // and expose them in async local storage.
+  globalRegistryTemplate = new BulkRegistry(bulkOpRegistry);
+
+  // Sets up the user scalar registry and returns it.
+  // Those are the user-exposed scalar functions which are not aware
+  // of any execution context. They delegate execution to the context-aware
+  // scalar handlers taken from the bulk plan stored in async context.
+  const scalarHandlers = {} as ScalarizeRegistry<R>;
+
+  for (const entryName of Object.keys(bulkOpRegistry)) {
+    const scalarFn = async (input: unknown): Promise<unknown> => {
+      const bulkPlan = STORE.getStore();
+
+      if (!bulkPlan) {
+        throw new Error(
+          'balar error: scalar function called outside of a bulk operation',
+        );
       }
 
-      return result;
-    });
+      if (!(entryName in bulkPlan.internalRegistry)) {
+        throw new Error(`balar error: no scalar function registered for ${entryName}`);
+      }
 
-    const results = await Promise.all(executions);
-    const resultsByKey = new Map(
-      results.map((result, index) => [requests[index], result]),
-    );
+      return bulkPlan.internalRegistry[entryName].scalarHandler(input);
+    };
 
-    return resultsByKey;
+    scalarHandlers[entryName as keyof R] = scalarFn as ScalarizeRegistry<R>[keyof R];
   }
+
+  return scalarHandlers;
+}
+
+export async function execute<MainIn, MainOut>(
+  requests: MainIn[],
+  processor: (request: MainIn) => Promise<MainOut>,
+): Promise<Map<MainIn, MainOut>> {
+  if (!globalRegistryTemplate) {
+    throw new Error('balar error: registry not created');
+  }
+
+  const plan = new BulkyPlan({
+    registry: globalRegistryTemplate,
+    processor,
+  });
+
+  const results = await plan.run(requests);
+
+  return results;
 }
