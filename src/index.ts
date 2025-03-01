@@ -3,7 +3,7 @@ import { AsyncLocalStorage } from 'async_hooks';
 export type BulkFn<In, Out> = (request: In[]) => Promise<Map<In, Out>>;
 export type TransformInputsFn<In> = (_: NoInfer<In>[]) => Map<NoInfer<In>, NoInfer<In>>;
 export type ScalarFn<In, Out> = (request: In) => Promise<Out>;
-export type ExecutionsBuf<In, Out> = { key: In; resolve: (ret: Out) => void }[];
+export type Execution<In, Out> = { key: In; resolve: (ret: Out) => void };
 
 export type RegistryEntry<In, Out> = {
   fn: BulkFn<In, Out>;
@@ -12,7 +12,7 @@ export type RegistryEntry<In, Out> = {
 type CheckedRegistryEntry<I, O> = RegistryEntry<I, O> & { __brand: 'checked' };
 export type InternalRegistryEntry<In, Out> = RegistryEntry<In, Out> & {
   scalarHandler: ScalarFn<In, Out>;
-  executions: ExecutionsBuf<In, Out>;
+  executions: Execution<In, Out>[];
 };
 
 export type ToInternalRegistry<T extends Record<string, RegistryEntry<any, any>>> = {
@@ -91,7 +91,7 @@ export class BulkyPlan<
     for (const [name, registryEntry] of Object.entries(registry) as Array<
       [keyof R, R[keyof R]]
     >) {
-      const executions: ExecutionsBuf<unknown, unknown> = [];
+      const executions: Execution<unknown, unknown>[] = [];
 
       this.internalRegistry[name] = {
         ...registryEntry,
@@ -206,11 +206,6 @@ export class BulkyPlan<
 
 ////////////////////////////////////////
 
-// - create scalar registry: takes the bulk op configs and stores a template (BulkReg?)
-// or generator for the init of the async context of an execution.
-// - execute: inits the async context with template (BulkPlan(reg, processor)?) and runs the bulk op
-// THIS CONTEXT COULD BE A BULK PLAN WITHOUT MANY CHANGES!
-
 let globalRegistryTemplate: BulkRegistry<
   Record<string, CheckedRegistryEntry<unknown, unknown>>
 > | null;
@@ -256,6 +251,12 @@ export function scalarize<R extends Record<string, CheckedRegistryEntry<any, any
   return scalarHandlers;
 }
 
+const CONCURRENT_EXECS = new AsyncLocalStorage<{
+  total: number;
+  count: number;
+  executions: Execution<unknown, unknown>[];
+}>();
+
 export async function execute<MainIn, MainOut>(
   requests: MainIn[],
   processor: (request: MainIn) => Promise<MainOut>,
@@ -264,12 +265,66 @@ export async function execute<MainIn, MainOut>(
     throw new Error('balar error: registry not created');
   }
 
-  const plan = new BulkyPlan({
-    registry: globalRegistryTemplate,
-    processor,
+  if (!CONCURRENT_EXECS.getStore()) {
+    const plan = new BulkyPlan({
+      registry: globalRegistryTemplate,
+      processor,
+    });
+
+    return CONCURRENT_EXECS.run(
+      { total: requests.length, count: 0, executions: [] },
+      () => {
+        return plan.run(requests);
+      },
+    );
+  }
+
+  const concurrentExecs = CONCURRENT_EXECS.getStore()!;
+
+  // Sync all concurrent execute() calls and collect all requests
+  const coalescedResults = await new Promise(async (resolve) => {
+    concurrentExecs.count += 1;
+    concurrentExecs.executions.push(
+      ...requests.map((request) => ({ key: request, resolve })),
+    );
+
+    // Only proceed after this if we're the last concurrent execution
+    if (concurrentExecs.count < concurrentExecs.total) {
+      return;
+    }
+
+    // All concurrent executions have been queued => flush
+    const executions = concurrentExecs.executions;
+    concurrentExecs.executions = [];
+    concurrentExecs.count = 0;
+
+    const coalescedRequests = executions.map((item) => item.key);
+
+    const plan = new BulkyPlan({
+      registry: globalRegistryTemplate!,
+      processor,
+    });
+
+    const coalescedResults = await CONCURRENT_EXECS.run(
+      { total: coalescedRequests.length, count: 0, executions: [] },
+      () => {
+        return plan.run(coalescedRequests as unknown as MainIn[]);
+      },
+    );
+
+    for (const execution of executions) {
+      execution.resolve(coalescedResults);
+    }
   });
 
-  const results = await plan.run(requests);
+  const requestSet = new Set(requests);
+  const result = new Map<MainIn, MainOut>();
 
-  return results;
+  for (const [key, value] of coalescedResults as Map<MainIn, MainOut>) {
+    if (requestSet.has(key)) {
+      result.set(key, value);
+    }
+  }
+
+  return result;
 }

@@ -39,7 +39,7 @@ export class AccountsRepository {
   async getAccountsById(accountIds: number[]): Promise<Map<number, Account>> {
     return new Map(
       accountIds
-        .map((id) => [id, this.accounts.get(id) ?? null] as const)
+        .map((id) => [id, this.accounts.get(id)] as const)
         .filter((kv): kv is [number, Account] => !!kv[1]),
     );
   }
@@ -54,7 +54,9 @@ export class AccountsRepository {
         results.set(req, false);
       } else {
         results.set(req, true);
-        this.accounts.get(req.accountId)?.budgetIds?.push(...req.budgetIds);
+        const account = this.accounts.get(req.accountId)!;
+        account.budgetIds ??= [];
+        account.budgetIds.push(...req.budgetIds);
       }
     }
 
