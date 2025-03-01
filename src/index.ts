@@ -159,8 +159,8 @@ export class BulkyPlan<
       const executions = requests.map(async (request) => {
         const result = await this.processor(request);
 
-        if (result) {
-          this.doneCandidates += 1;
+        this.doneCandidates += 1;
+        if (this.lastSeenBulkOp) {
           this.maybeExecute(this.lastSeenBulkOp);
         }
 
