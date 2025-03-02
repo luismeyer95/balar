@@ -1,5 +1,4 @@
-import { AsyncLocalStorage } from 'async_hooks';
-import { BulkRegistry, BulkyPlan, def } from '../src/index';
+import { def } from '../src/index';
 import * as balar from '../src/index';
 import {
   Account,
@@ -34,6 +33,35 @@ describe('budget tests', () => {
     accountsRepo.linkAccountToBudgets.bind(accountsRepo),
   );
 
+  const registry = balar.scalarize({
+    // Register your bulk API dependencies
+    getAccountsById: def(spyGetAccountsById as typeof accountsRepo.getAccountsById),
+    getCurrentBudget: def(spyGetCurrentBudgets as typeof budgetsRepo.getCurrentBudgets),
+    updateBudget: def(spyUpdateBudgets as typeof budgetsRepo.updateBudgets),
+    getBudgetSpends: def(spyGetBudgetSpends as typeof budgetsRepo.getBudgetSpends),
+    linkAccountToBudgets: def({
+      fn: spyLinkBudgetsToAccount as typeof accountsRepo.linkAccountToBudgets,
+      transformInputs: (reqs) => {
+        type Req = (typeof reqs)[0];
+        const requestMapping: Map<Req, Req> = new Map();
+        const newRequestByAccount: Map<number, Req> = new Map();
+
+        for (const req of reqs) {
+          const newRequest = newRequestByAccount.get(req.accountId) ?? {
+            accountId: req.accountId,
+            budgetIds: [],
+          };
+          newRequestByAccount.set(req.accountId, newRequest);
+
+          newRequest.budgetIds.push(...req.budgetIds);
+          requestMapping.set(req, newRequest);
+        }
+
+        return requestMapping;
+      },
+    }),
+  });
+
   beforeEach(async () => {
     spyGetCurrentBudgets.mockClear();
     spyGetBudgetSpends.mockClear();
@@ -47,29 +75,40 @@ describe('budget tests', () => {
   });
 
   test('executing scalar function outside bulk exec should fail', async () => {
-    // Arrange
-    const registry = balar.scalarize({
-      // Register your bulk API dependencies
-      getCurrentBudgets: def(
-        spyGetCurrentBudgets as typeof budgetsRepo.getCurrentBudgets,
-      ),
-    });
+    await expect(registry.getCurrentBudget(1)).rejects.toThrowError();
+  });
 
-    // Act/Assert
-    await expect(registry.getCurrentBudgets(1)).rejects.toThrowError();
+  test('no op processor', async () => {
+    // Act
+    const result = await balar.execute([1, 2], async function () {});
+
+    // Assert
+    expect(result).toEqual(
+      new Map([
+        [1, undefined],
+        [2, undefined],
+      ]),
+    );
+  });
+
+  test('empty inputs', async () => {
+    // Act
+    const result = await balar.execute(
+      [],
+      async function getBudgetAmount(budgetId: number): Promise<number> {
+        const currentBudget = await registry.getCurrentBudget(budgetId);
+        return currentBudget.amount;
+      },
+    );
+
+    // Assert
+    expect(result).toEqual(new Map());
   });
 
   test('concurrent bulk execs using the same scalar fns should be isolated', async () => {
     // Arrange
-    const registry = balar.scalarize({
-      // Register your bulk API dependencies
-      getCurrentBudgets: def(
-        spyGetCurrentBudgets as typeof budgetsRepo.getCurrentBudgets,
-      ),
-    });
-
     async function processor(budgetId: number): Promise<number> {
-      const currentBudget = await registry.getCurrentBudgets(budgetId);
+      const currentBudget = await registry.getCurrentBudget(budgetId);
       return currentBudget.amount;
     }
 
@@ -94,17 +133,9 @@ describe('budget tests', () => {
   });
 
   test('simple workflow with 1 checkpoint', async () => {
-    // Arrange
-    const registry = balar.scalarize({
-      // Register your bulk API dependencies
-      getCurrentBudgets: def(
-        spyGetCurrentBudgets as typeof budgetsRepo.getCurrentBudgets,
-      ),
-    });
-
     // Act
     const result = await balar.execute([1], async function (id: number): Promise<number> {
-      const currentBudget = await registry.getCurrentBudgets(id);
+      const currentBudget = await registry.getCurrentBudget(id);
       return currentBudget.amount;
     });
 
@@ -117,12 +148,6 @@ describe('budget tests', () => {
 
   test('standard bulk update workflow with sequential checkpoints', async () => {
     // Arrange
-    const registry = balar.scalarize({
-      // Register your bulk API dependencies
-      getCurrentBudget: def(spyGetCurrentBudgets as typeof budgetsRepo.getCurrentBudgets),
-      updateBudget: def(spyUpdateBudgets as typeof budgetsRepo.updateBudgets),
-    });
-
     budgetsRepo.failUpdateForBudget(4);
 
     // Act
@@ -175,41 +200,34 @@ describe('budget tests', () => {
     expect(spyUpdateBudgets).toHaveBeenCalledTimes(1);
   });
 
-  test('concurrent checkpoints with Promise.all()', async () => {
+  test('simple concurrent checkpoints with Promise.all()', async () => {
     // Arrange
-    const registry = balar.scalarize({
-      // Register your bulk API dependencies
-      getCurrentBudgets: def(
-        spyGetCurrentBudgets as typeof budgetsRepo.getCurrentBudgets,
-      ),
-      getBudgetSpends: def(spyGetBudgetSpends as typeof budgetsRepo.getBudgetSpends),
-    });
-
     // Odd numbers should fail (way over budget)
     budgetsRepo.spendOnBudget(1, 1000);
     budgetsRepo.spendOnBudget(3, 5000);
 
     // Act
-    const requestIds = [1, 2, 3, 4];
-    const issues = await balar.execute(requestIds, async function (id: number): Promise<
-      Issues | true
-    > {
-      const issues = new Issues();
+    const budgetIds = [1, 2, 3, 4];
+    const issues = await balar.execute(
+      budgetIds,
+      async function (budgetId: number): Promise<Issues | true> {
+        const issues = new Issues();
 
-      const [currentBudget, budgetSpend] = await Promise.all([
-        registry.getCurrentBudgets(id),
-        registry.getBudgetSpends(id),
-      ]);
+        const [currentBudget, budgetSpend] = await Promise.all([
+          registry.getCurrentBudget(budgetId),
+          registry.getBudgetSpends(budgetId),
+        ]);
 
-      if (budgetSpend > currentBudget.amount) {
-        issues.errors.push(
-          `current spend is above limit: ${budgetSpend} > ${currentBudget.amount}`,
-        );
-        return issues;
-      }
+        if (budgetSpend > currentBudget.amount) {
+          issues.errors.push(
+            `current spend is above limit: ${budgetSpend} > ${currentBudget.amount}`,
+          );
+          return issues;
+        }
 
-      return true;
-    });
+        return true;
+      },
+    );
 
     // Assert
     const expected = new Map<number, Issues | true>([
@@ -225,21 +243,12 @@ describe('budget tests', () => {
   });
 
   test('concurrent reads of the same account should coalesce into 1 shared bulk input/output', async () => {
-    // Arrange
-    const registry = balar.scalarize({
-      // Register your bulk API dependencies
-      getAccountsById: def(spyGetAccountsById as typeof accountsRepo.getAccountsById),
-      getCurrentBudgets: def(
-        spyGetCurrentBudgets as typeof budgetsRepo.getCurrentBudgets,
-      ),
-    });
-
     // Act
     const requestIds = [1, 2, 3]; // all budgets are under the same account
     const issues = await balar.execute(
       requestIds,
       async function processor(budgetId: number): Promise<Account> {
-        const budget = await registry.getCurrentBudgets(budgetId);
+        const budget = await registry.getCurrentBudget(budgetId);
 
         return await registry.getAccountsById(budget.accountId);
       },
@@ -260,41 +269,12 @@ describe('budget tests', () => {
   });
 
   test('concurrent requests that patch the same account should coalesce into 1 shared bulk input/output', async () => {
-    // Arrange
-    const registry = balar.scalarize({
-      // Register your bulk API dependencies
-      getCurrentBudgets: def(
-        spyGetCurrentBudgets as typeof budgetsRepo.getCurrentBudgets,
-      ),
-      linkAccountToBudgets: def({
-        fn: spyLinkBudgetsToAccount as typeof accountsRepo.linkAccountToBudgets,
-        transformInputs: (reqs) => {
-          type Req = (typeof reqs)[0];
-          const requestMapping: Map<Req, Req> = new Map();
-          const newRequestByAccount: Map<number, Req> = new Map();
-
-          for (const req of reqs) {
-            const newRequest = newRequestByAccount.get(req.accountId) ?? {
-              accountId: req.accountId,
-              budgetIds: [],
-            };
-            newRequestByAccount.set(req.accountId, newRequest);
-
-            newRequest.budgetIds.push(...req.budgetIds);
-            requestMapping.set(req, newRequest);
-          }
-
-          return requestMapping;
-        },
-      }),
-    });
-
     // Act
     const requestIds = [1, 2, 3]; // all budgets are under the same account
     const issues = await balar.execute(
       requestIds,
       async function linkAccountToBudget(budgetId: number): Promise<boolean> {
-        const budget = await registry.getCurrentBudgets(budgetId);
+        const budget = await registry.getCurrentBudget(budgetId);
 
         const result = await registry.linkAccountToBudgets({
           accountId: budget.accountId,
@@ -320,5 +300,25 @@ describe('budget tests', () => {
     expect(spyLinkBudgetsToAccount).toHaveBeenCalledWith([
       { accountId: 1, budgetIds: [1, 2, 3] },
     ]);
+  });
+
+  test('simple workflow with exception thrown inline', async () => {
+    // Act
+    const executeCall = () =>
+      balar.execute(
+        [1, 2, 777],
+        async function getBudgetOrThrowIfNotExist(id: number): Promise<number> {
+          const currentBudget = await registry.getCurrentBudget(id);
+          if (currentBudget === undefined) {
+            throw new Error('budget does not exist');
+          }
+
+          return currentBudget.amount;
+        },
+      );
+
+    // Assert
+    await expect(executeCall).rejects.toThrow('budget does not exist');
+    expect(spyGetCurrentBudgets).toHaveBeenCalledTimes(1);
   });
 });

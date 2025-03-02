@@ -112,7 +112,7 @@ export class BudgetsRepository {
   async getCurrentBudgets(budgetIds: number[]): Promise<Map<number, Budget>> {
     return new Map(
       budgetIds
-        .map((id) => [id, this.budgets.get(id) ?? null] as const)
+        .map((id) => [id, this.budgets.get(id)] as const)
         .filter((kv): kv is [number, Budget] => !!kv[1]),
     );
   }

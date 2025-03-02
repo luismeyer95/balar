@@ -63,7 +63,7 @@ export class BulkyPlan<
 > {
   processor: (request: MainIn) => Promise<MainOut>;
   internalRegistry!: ToInternalRegistry<R>;
-  lastSeenBulkOp!: InternalRegistryEntry<any, any>;
+  lastSeenOp?: keyof R;
 
   doneCandidates = 0;
   totalCandidates = 0;
@@ -105,20 +105,19 @@ export class BulkyPlan<
     return new Map(inputs.map((input) => [input, input]));
   }
 
-  maybeExecute<In, Out>(op: InternalRegistryEntry<In, Out>) {
-    // Checks if all candidates have reached the next checkpoint.
+  maybeExecute(name: keyof R) {
+    const op = this.internalRegistry[name];
+    if (op.executions.length === 0) {
+      return;
+    }
 
+    // Checks if all candidates have reached the next checkpoint.
     // If all concurrent executions at this time have either
     // - called this handler's scalar function and awaiting execution
     // - or completed execution by returning
     // Then, we can execute the bulk function.
-
     if (op.executions.length + this.doneCandidates !== this.totalCandidates) {
       // Not all candidates have reached the next checkpoint
-      return;
-    }
-
-    if (op.executions.length === 0) {
       return;
     }
 
@@ -142,6 +141,8 @@ export class BulkyPlan<
     // inputs mapping to the same transformed input.
     const finalInputs = [...new Set(mappedInputs.values())];
 
+    console.log('executing bulk op', name, 'with', finalInputs);
+
     op.fn(finalInputs).then((result) => {
       for (const item of op.executions) {
         item.resolve(result.get(item.key)!);
@@ -151,8 +152,9 @@ export class BulkyPlan<
   }
 
   async run(requests: MainIn[]): Promise<Map<MainIn, MainOut>> {
+    console.log('executing plan:', requests);
     // Initialize the target total. Used to track the progress towards each
-    // checkpoint during the concurrent executions.
+    // checkpoint during the concurrent processor calls.
     this.totalCandidates = requests.length;
 
     const results = await STORE.run(this as any /* TODO FIX */, async () => {
@@ -160,8 +162,8 @@ export class BulkyPlan<
         const result = await this.processor(request);
 
         this.doneCandidates += 1;
-        if (this.lastSeenBulkOp) {
-          this.maybeExecute(this.lastSeenBulkOp);
+        if (this.lastSeenOp) {
+          this.maybeExecute(this.lastSeenOp);
         }
 
         return result;
@@ -188,12 +190,11 @@ export class BulkyPlan<
         // be the one from the last registered scalar call.
         //
         // TODO: check if we should poll all handlers for execution instead.
-        const bulkOp = this.internalRegistry[entryName];
-        this.lastSeenBulkOp = bulkOp;
+        this.lastSeenOp = entryName;
 
         return new Promise((resolve) => {
-          bulkOp.executions.push({ key: input, resolve });
-          this.maybeExecute(bulkOp);
+          this.internalRegistry[entryName].executions.push({ key: input, resolve });
+          this.maybeExecute(entryName);
         });
       };
 
@@ -241,6 +242,8 @@ export function scalarize<R extends Record<string, CheckedRegistryEntry<any, any
       if (!(entryName in bulkPlan.internalRegistry)) {
         throw new Error(`balar error: no scalar function registered for ${entryName}`);
       }
+
+      console.log('executing user scalar fn', entryName, 'with', input);
 
       return bulkPlan.internalRegistry[entryName].scalarHandler(input);
     };
