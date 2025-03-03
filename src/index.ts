@@ -56,7 +56,7 @@ export function def<I, O>(
   return registryEntry as CheckedRegistryEntry<I, O>;
 }
 
-export class BulkyPlan<
+export class BalarExecution<
   MainIn,
   MainOut,
   R extends Record<string, CheckedRegistryEntry<any, any>>,
@@ -64,6 +64,8 @@ export class BulkyPlan<
   processor: (request: MainIn) => Promise<MainOut>;
   internalRegistry!: ToInternalRegistry<R>;
   queuedOperations: Set<keyof R> = new Set();
+
+  concurrentExecs: Execution<unknown, unknown>[] = [];
 
   doneCandidates = 0;
   totalCandidates = 0;
@@ -79,7 +81,7 @@ export class BulkyPlan<
     this.registerInternal(registry.entries);
   }
 
-  registerInternal(registry: R) {
+  private registerInternal(registry: R) {
     this.internalRegistry = {} as ToInternalRegistry<R>;
     // For each type of bulk operation, we need 3 things:
     // - the bulk function to execute when all candidates have reached the next checkpoint
@@ -101,11 +103,11 @@ export class BulkyPlan<
     }
   }
 
-  deduplicateInputs<In, Out>(inputs: In[]): Map<In, In> {
+  private deduplicateInputs<In>(inputs: In[]): Map<In, In> {
     return new Map(inputs.map((input) => [input, input]));
   }
 
-  tryExecuteQueuedOperations(...entryNames: (keyof R)[]) {
+  private tryExecuteQueuedOperations(...entryNames: (keyof R)[]) {
     // TODO: optimize
     entryNames = entryNames.length > 0 ? entryNames : [...this.queuedOperations.keys()];
     const executedList = entryNames.filter((opName) => this.maybeExecute(opName));
@@ -115,7 +117,7 @@ export class BulkyPlan<
     }
   }
 
-  maybeExecute(name: keyof R): boolean {
+  private maybeExecute(name: keyof R): boolean {
     const op = this.internalRegistry[name];
     if (op.executions.length === 0) {
       return false;
@@ -169,7 +171,7 @@ export class BulkyPlan<
     // checkpoint during the concurrent processor calls.
     this.totalCandidates = requests.length;
 
-    const results = await STORE.run(this as any /* TODO FIX */, async () => {
+    const results = await EXECUTION.run(this as any /* TODO FIX */, async () => {
       const executions = requests.map(async (request) => {
         const result = await this.processor(request);
         console.log('yield from processor execution for request input', request);
@@ -190,7 +192,55 @@ export class BulkyPlan<
     return resultsByKey;
   }
 
-  createContextualScalarHandlers(registry: R): ScalarizeRegistry<R> {
+  async nestedContextExecute<In, Out>(
+    requests: In[],
+    processor: (request: In) => Promise<Out>,
+  ) {
+    const allResults = await new Promise(async (resolve) => {
+      this.concurrentExecs.push({ key: requests, resolve });
+
+      console.log(
+        'called nested execute()',
+        this.concurrentExecs.length,
+        '/',
+        this.doneCandidates,
+      );
+
+      // Only proceed after this if we're the last concurrent execution
+      if (this.concurrentExecs.length + this.doneCandidates < this.totalCandidates) {
+        return;
+      }
+
+      // All concurrent executions have been queued => flush
+      const executions = this.concurrentExecs;
+      this.concurrentExecs = [];
+
+      const plan = new BalarExecution({
+        registry: globalRegistryTemplate!,
+        processor,
+      });
+
+      const allRequests = executions.flatMap((item) => item.key);
+      const allResults = await plan.run(allRequests as In[]);
+
+      for (const execution of executions) {
+        execution.resolve(allResults);
+      }
+    });
+
+    const requestSet = new Set(requests);
+    const result = new Map<In, Out>();
+
+    for (const [key, value] of allResults as Map<In, Out>) {
+      if (requestSet.has(key)) {
+        result.set(key, value);
+      }
+    }
+
+    return result;
+  }
+
+  private createContextualScalarHandlers(registry: R): ScalarizeRegistry<R> {
     const scalarHandlers = {} as ScalarizeRegistry<R>;
 
     for (const entryName of Object.keys(registry) as Array<keyof R>) {
@@ -222,8 +272,8 @@ let globalRegistryTemplate: BulkRegistry<
   Record<string, CheckedRegistryEntry<unknown, unknown>>
 > | null;
 
-const STORE = new AsyncLocalStorage<
-  BulkyPlan<unknown, unknown, Record<string, CheckedRegistryEntry<unknown, unknown>>>
+const EXECUTION = new AsyncLocalStorage<
+  BalarExecution<unknown, unknown, Record<string, CheckedRegistryEntry<unknown, unknown>>>
 >();
 
 export function scalarize<R extends Record<string, CheckedRegistryEntry<any, any>>>(
@@ -242,21 +292,21 @@ export function scalarize<R extends Record<string, CheckedRegistryEntry<any, any
 
   for (const entryName of Object.keys(bulkOpRegistry)) {
     const scalarFn = async (input: unknown): Promise<unknown> => {
-      const bulkPlan = STORE.getStore();
+      const bulkContext = EXECUTION.getStore();
 
-      if (!bulkPlan) {
+      if (!bulkContext) {
         throw new Error(
           'balar error: scalar function called outside of a bulk operation',
         );
       }
 
-      if (!(entryName in bulkPlan.internalRegistry)) {
+      if (!(entryName in bulkContext.internalRegistry)) {
         throw new Error(`balar error: no scalar function registered for ${entryName}`);
       }
 
       console.log('executing user scalar fn', entryName, 'with', input);
 
-      return bulkPlan.internalRegistry[entryName].scalarHandler(input);
+      return bulkContext.internalRegistry[entryName].scalarHandler(input);
     };
 
     scalarHandlers[entryName as keyof R] = scalarFn as ScalarizeRegistry<R>[keyof R];
@@ -265,80 +315,25 @@ export function scalarize<R extends Record<string, CheckedRegistryEntry<any, any
   return scalarHandlers;
 }
 
-const CONCURRENT_EXECS = new AsyncLocalStorage<{
-  total: number;
-  count: number;
-  executions: Execution<unknown, unknown>[];
-}>();
-
-export async function execute<MainIn, MainOut>(
-  requests: MainIn[],
-  processor: (request: MainIn) => Promise<MainOut>,
-): Promise<Map<MainIn, MainOut>> {
+export async function execute<In, Out>(
+  requests: In[],
+  processor: (request: In) => Promise<Out>,
+): Promise<Map<In, Out>> {
   if (!globalRegistryTemplate) {
     throw new Error('balar error: registry not created');
   }
 
-  if (!CONCURRENT_EXECS.getStore()) {
-    const plan = new BulkyPlan({
+  const execution = EXECUTION.getStore();
+
+  if (!execution) {
+    const execution = new BalarExecution({
       registry: globalRegistryTemplate,
       processor,
     });
 
-    return CONCURRENT_EXECS.run(
-      { total: requests.length, count: 0, executions: [] },
-      () => {
-        return plan.run(requests);
-      },
-    );
+    return execution.run(requests);
   }
 
-  const concurrentExecs = CONCURRENT_EXECS.getStore()!;
-
-  // Sync all concurrent execute() calls and collect all requests
-  const coalescedResults = await new Promise(async (resolve) => {
-    concurrentExecs.count += 1;
-    concurrentExecs.executions.push(
-      ...requests.map((request) => ({ key: request, resolve })),
-    );
-
-    // Only proceed after this if we're the last concurrent execution
-    if (concurrentExecs.count < concurrentExecs.total) {
-      return;
-    }
-
-    // All concurrent executions have been queued => flush
-    const executions = concurrentExecs.executions;
-    concurrentExecs.executions = [];
-    concurrentExecs.count = 0;
-
-    const coalescedRequests = executions.map((item) => item.key);
-
-    const plan = new BulkyPlan({
-      registry: globalRegistryTemplate!,
-      processor,
-    });
-
-    const coalescedResults = await CONCURRENT_EXECS.run(
-      { total: coalescedRequests.length, count: 0, executions: [] },
-      () => {
-        return plan.run(coalescedRequests as unknown as MainIn[]);
-      },
-    );
-
-    for (const execution of executions) {
-      execution.resolve(coalescedResults);
-    }
-  });
-
-  const requestSet = new Set(requests);
-  const result = new Map<MainIn, MainOut>();
-
-  for (const [key, value] of coalescedResults as Map<MainIn, MainOut>) {
-    if (requestSet.has(key)) {
-      result.set(key, value);
-    }
-  }
-
-  return result;
+  // Sync all concurrent execute() calls, then execute and get back ALL the results
+  return execution.nestedContextExecute(requests, processor);
 }

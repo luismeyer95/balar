@@ -101,6 +101,65 @@ describe('nested contexts tests', () => {
     expect(result).toEqual(expected);
   });
 
+  test('multiple nesting levels with processing before and after nestings', async () => {
+    const noop2 = jest.fn(async (arr: number[]) => new Map(arr.map((id) => [id, id])));
+
+    const registry = balar.scalarize({
+      noop1: def(async (arr: number[]) => new Map(arr.map((id) => [id, id]))),
+      noop2: def(noop2),
+    });
+
+    const result = await balar.execute([10, 15, 30], async function (a: number) {
+      await registry.noop1(a);
+
+      const result = await balar.execute([a + 1, a + 11], async (b) => {
+        if (b % 2 === 0) {
+          return -1;
+        }
+
+        await Promise.all([registry.noop1(b), registry.noop2(b)]);
+
+        const result = await balar.execute([b + 1, b + 11], async (c: number) => {
+          const [one, two] = [registry.noop1(c), registry.noop2(c)];
+          await two;
+          await one;
+
+          return c;
+        });
+
+        return [...result.values()];
+      });
+
+      await registry.noop2(a);
+      return [...result.values()];
+    });
+
+    expect(noop2).toHaveBeenCalledTimes(3);
+    expect(noop2).toHaveBeenNthCalledWith(1, [11, 21, 31, 41]);
+    expect(noop2).toHaveBeenNthCalledWith(2, [12, 22, 32, 42, 52]); // deduplication!
+    expect(noop2).toHaveBeenNthCalledWith(3, [10, 15, 30]);
+
+    expect(result).toEqual(
+      new Map<number, (number[] | -1)[]>([
+        [
+          10,
+          [
+            [12, 22],
+            [22, 32],
+          ],
+        ],
+        [15, [-1, -1]],
+        [
+          30,
+          [
+            [32, 42],
+            [42, 52],
+          ],
+        ],
+      ]),
+    );
+  });
+
   test('return from 1-level nested execute() context should restore 0th level context syncing', async () => {
     // Arrange
     const registry = balar.scalarize({
