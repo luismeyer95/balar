@@ -242,6 +242,47 @@ describe('budget tests', () => {
     expect(spyGetBudgetSpends).toHaveBeenCalledTimes(1);
   });
 
+  test('mixing in yields before concurrent checkpoints', async () => {
+    // Arrange
+    // Odd numbers should fail (way over budget)
+    budgetsRepo.spendOnBudget(1, 1000);
+    budgetsRepo.spendOnBudget(3, 5000);
+
+    // Act
+    const budgetIds = [1, 2, 3, 4];
+    const results = await balar.execute(
+      budgetIds,
+      async function getRemainingBudget(budgetId: number) {
+        // Arbitrary return for ID 4
+        if (budgetId === 4) {
+          return 'budget does not exist';
+        }
+
+        const [currentBudget, budgetSpend] = await Promise.all([
+          registry.getCurrentBudget(budgetId),
+          registry.getBudgetSpends(budgetId),
+        ]);
+
+        return currentBudget.amount - (budgetSpend || 0);
+      },
+    );
+
+    // Assert
+    const expected = new Map<number, number | string>([
+      [1, -500],
+      [2, 1000],
+      [3, -3500],
+      [4, 'budget does not exist'],
+    ]);
+    expect(results).toEqual(expected);
+
+    expect(spyGetCurrentBudgets).toHaveBeenCalledTimes(1);
+    expect(spyGetCurrentBudgets).toHaveBeenCalledWith([1, 2, 3]);
+
+    expect(spyGetBudgetSpends).toHaveBeenCalledTimes(1);
+    expect(spyGetBudgetSpends).toHaveBeenCalledWith([1, 2, 3]);
+  });
+
   test('concurrent reads of the same account should coalesce into 1 shared bulk input/output', async () => {
     // Act
     const requestIds = [1, 2, 3]; // all budgets are under the same account

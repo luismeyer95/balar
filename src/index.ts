@@ -63,7 +63,7 @@ export class BulkyPlan<
 > {
   processor: (request: MainIn) => Promise<MainOut>;
   internalRegistry!: ToInternalRegistry<R>;
-  lastSeenOp?: keyof R;
+  queuedOperations: Set<keyof R> = new Set();
 
   doneCandidates = 0;
   totalCandidates = 0;
@@ -105,10 +105,20 @@ export class BulkyPlan<
     return new Map(inputs.map((input) => [input, input]));
   }
 
-  maybeExecute(name: keyof R) {
+  tryExecuteQueuedOperations(...entryNames: (keyof R)[]) {
+    // TODO: optimize
+    entryNames = entryNames.length > 0 ? entryNames : [...this.queuedOperations.keys()];
+    const executedList = entryNames.filter((opName) => this.maybeExecute(opName));
+
+    for (const executedOp of executedList) {
+      this.queuedOperations.delete(executedOp);
+    }
+  }
+
+  maybeExecute(name: keyof R): boolean {
     const op = this.internalRegistry[name];
     if (op.executions.length === 0) {
-      return;
+      return false;
     }
 
     // Checks if all candidates have reached the next checkpoint.
@@ -118,7 +128,7 @@ export class BulkyPlan<
     // Then, we can execute the bulk function.
     if (op.executions.length + this.doneCandidates !== this.totalCandidates) {
       // Not all candidates have reached the next checkpoint
-      return;
+      return false;
     }
 
     // Next checkpoint reached, run bulk operation
@@ -149,6 +159,8 @@ export class BulkyPlan<
       }
       op.executions = [];
     });
+
+    return true;
   }
 
   async run(requests: MainIn[]): Promise<Map<MainIn, MainOut>> {
@@ -160,11 +172,10 @@ export class BulkyPlan<
     const results = await STORE.run(this as any /* TODO FIX */, async () => {
       const executions = requests.map(async (request) => {
         const result = await this.processor(request);
+        console.log('yield from processor execution for request input', request);
 
         this.doneCandidates += 1;
-        if (this.lastSeenOp) {
-          this.maybeExecute(this.lastSeenOp);
-        }
+        this.tryExecuteQueuedOperations();
 
         return result;
       });
@@ -190,11 +201,11 @@ export class BulkyPlan<
         // be the one from the last registered scalar call.
         //
         // TODO: check if we should poll all handlers for execution instead.
-        this.lastSeenOp = entryName;
+        this.queuedOperations.add(entryName);
 
         return new Promise((resolve) => {
           this.internalRegistry[entryName].executions.push({ key: input, resolve });
-          this.maybeExecute(entryName);
+          this.tryExecuteQueuedOperations(entryName);
         });
       };
 
