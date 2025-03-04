@@ -227,24 +227,17 @@ describe('nested contexts tests', () => {
     });
 
     // Act
-    const result = await balar.execute(
-      [1, 2, 3, 4],
-      async function (id: number): Promise<number> {
-        // .. arbitrary code, that could take different amount of time to execute across calls
+    const result = await balar.execute([1, 2, 3, 4], async function (id: number) {
+      const result = await (() => {
+        if (id % 2 === 0) {
+          return registry.noopEven(id);
+        } else {
+          return registry.noopOdd(id);
+        }
+      })();
 
-        // no work
-        // if we resolve when max(exec.count
-        const result = await (async () => {
-          if (id % 2 === 0) {
-            return registry.noopEven(id);
-          } else {
-            return registry.noopOdd(id);
-          }
-        })();
-
-        return result;
-      },
-    );
+      return result;
+    });
 
     // Assert
     expect(noopEven).toHaveBeenNthCalledWith(1, [2, 4]);
@@ -254,6 +247,46 @@ describe('nested contexts tests', () => {
         [1, 1],
         [2, 2],
         [3, 3],
+        [4, 4],
+      ]),
+    );
+  });
+
+  test('branching - scalar vs execute', async () => {
+    // Arrange
+    async function noop(arr: number[]) {
+      return new Map(arr.map((id) => [id, id]));
+    }
+
+    const noopMock = jest.fn(noop);
+
+    const registry = balar.scalarize({
+      noop: def(noopMock),
+    });
+
+    // Act
+    const result = await balar.execute([1, 2, 3, 4], async function (id: number) {
+      const result = await (() => {
+        if (id % 2 === 0) {
+          return registry.noop(id);
+        } else {
+          return balar.execute([id * 10, id * 100], (id) => registry.noop(id));
+        }
+      })();
+
+      return typeof result === 'number' ? result : [...result.values()];
+    });
+
+    // Assert
+    expect(noopMock).toHaveBeenNthCalledWith(1, [2, 4]);
+    expect(noopMock).toHaveBeenNthCalledWith(2, [10, 100, 30, 300]);
+    expect(noopMock).toHaveBeenCalledTimes(2);
+
+    expect(result).toEqual(
+      new Map<number, number | number[]>([
+        [1, [10, 100]],
+        [2, 2],
+        [3, [30, 300]],
         [4, 4],
       ]),
     );

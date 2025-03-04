@@ -1,6 +1,7 @@
 import { AsyncLocalStorage } from 'async_hooks';
 
 export type BulkFn<In, Out> = (request: In[]) => Promise<Map<In, Out>>;
+export type ProcessorFn<In, Out> = (request: In) => Promise<Out>;
 export type TransformInputsFn<In> = (_: NoInfer<In>[]) => Map<NoInfer<In>, NoInfer<In>>;
 export type ScalarFn<In, Out> = (request: In) => Promise<Out>;
 export type Execution<In, Out> = { key: In; resolve: (ret: Out) => void };
@@ -64,12 +65,13 @@ export class BalarExecution<
   processor: (request: MainIn) => Promise<MainOut>;
   internalRegistry!: ToInternalRegistry<R>;
 
+  queuedExecute: ProcessorFn<unknown, unknown> | null = null;
+  concurrentExecs: Execution<unknown, unknown>[] = [];
   queuedOperations: Set<keyof R> = new Set();
   awaitingProcessors: Set<number> = new Set();
+
   doneProcessors = 0;
   totalProcessors = 0;
-
-  concurrentExecs: Execution<unknown, unknown>[] = [];
 
   constructor({
     registry,
@@ -138,6 +140,24 @@ export class BalarExecution<
   }
 
   private executeCheckpoint() {
+    console.log('executing checkpoint');
+
+    if (this.queuedExecute) {
+      const plan = new BalarExecution({
+        registry: globalRegistryTemplate!,
+        processor: this.queuedExecute,
+      });
+
+      const allRequests = this.concurrentExecs.flatMap((item) => item.key);
+      plan.run(allRequests).then((allResults) => {
+        for (const execution of this.concurrentExecs) {
+          execution.resolve(allResults);
+        }
+        // TODO: should the clear come before the bulk response handling?
+        this.concurrentExecs = [];
+      });
+    }
+
     for (const name of this.queuedOperations) {
       const op = this.internalRegistry[name];
       if (op.executions.length === 0) {
@@ -168,11 +188,13 @@ export class BalarExecution<
         for (const item of op.executions) {
           item.resolve(result.get(item.key)!);
         }
+        // TODO: should the clear come before the bulk response handling?
         op.executions = [];
       });
     }
 
     // Clear checkpoint buffer
+    this.queuedExecute = null;
     this.queuedOperations.clear();
     this.awaitingProcessors.clear();
   }
@@ -181,6 +203,15 @@ export class BalarExecution<
     requests: In[],
     processor: (request: In) => Promise<Out>,
   ) {
+    const processorId = PROCESSOR_ID.getStore();
+    if (processorId == null) {
+      throw new Error('balar error: missing processor ID');
+    }
+
+    this.awaitingProcessors.add(processorId);
+    // NOTE: this impl does not allow for different execute processors on the same checkpoint!
+    this.queuedExecute = processor as (request: unknown) => Promise<unknown>;
+
     const allResults = await new Promise(async (resolve) => {
       this.concurrentExecs.push({ key: requests, resolve });
 
@@ -188,28 +219,11 @@ export class BalarExecution<
         'called nested execute()',
         this.concurrentExecs.length,
         '/',
-        this.doneProcessors,
+        this.totalProcessors,
       );
 
-      // Only proceed after this if we're the last concurrent execution
-      if (this.concurrentExecs.length + this.doneProcessors < this.totalProcessors) {
-        return;
-      }
-
-      // All concurrent executions have been queued => flush
-      const executions = this.concurrentExecs;
-      this.concurrentExecs = [];
-
-      const plan = new BalarExecution({
-        registry: globalRegistryTemplate!,
-        processor,
-      });
-
-      const allRequests = executions.flatMap((item) => item.key);
-      const allResults = await plan.run(allRequests as In[]);
-
-      for (const execution of executions) {
-        execution.resolve(allResults);
+      if (this.awaitingProcessors.size + this.doneProcessors === this.totalProcessors) {
+        process.nextTick(() => this.executeCheckpoint());
       }
     });
 
