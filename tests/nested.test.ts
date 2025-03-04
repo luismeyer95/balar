@@ -102,13 +102,14 @@ describe('nested contexts tests', () => {
   });
 
   test('multiple nesting levels with processing before and after nestings', async () => {
+    // Arrange
     const noop2 = jest.fn(async (arr: number[]) => new Map(arr.map((id) => [id, id])));
-
     const registry = balar.scalarize({
       noop1: def(async (arr: number[]) => new Map(arr.map((id) => [id, id]))),
       noop2: def(noop2),
     });
 
+    // Act
     const result = await balar.execute([10, 15, 30], async function (a: number) {
       await registry.noop1(a);
 
@@ -134,11 +135,11 @@ describe('nested contexts tests', () => {
       return [...result.values()];
     });
 
+    // Assert
     expect(noop2).toHaveBeenCalledTimes(3);
     expect(noop2).toHaveBeenNthCalledWith(1, [11, 21, 31, 41]);
     expect(noop2).toHaveBeenNthCalledWith(2, [12, 22, 32, 42, 52]); // deduplication!
     expect(noop2).toHaveBeenNthCalledWith(3, [10, 15, 30]);
-
     expect(result).toEqual(
       new Map<number, (number[] | -1)[]>([
         [
@@ -160,7 +161,7 @@ describe('nested contexts tests', () => {
     );
   });
 
-  test('return from 1-level nested execute() context should restore 0th level context syncing', async () => {
+  test('return from level-1 nested execute() context should restore level-0 context syncing', async () => {
     // Arrange
     const registry = balar.scalarize({
       // Register your bulk API dependencies
@@ -209,5 +210,129 @@ describe('nested contexts tests', () => {
       [accountId2, { accountId: accountId2, amount: 1500 }], // budget 3
     ]);
     expect(result).toEqual(expected);
+  });
+
+  test('branching - simple branching', async () => {
+    // Arrange
+    async function noop(arr: number[]) {
+      return new Map(arr.map((id) => [id, id]));
+    }
+
+    const noopEven = jest.fn(noop);
+    const noopOdd = jest.fn(noop);
+
+    const registry = balar.scalarize({
+      noopEven: def(noopEven),
+      noopOdd: def(noopOdd),
+    });
+
+    // Act
+    const result = await balar.execute(
+      [1, 2, 3, 4],
+      async function (id: number): Promise<number> {
+        // .. arbitrary code, that could take different amount of time to execute across calls
+
+        // no work
+        // if we resolve when max(exec.count
+        const result = await (async () => {
+          if (id % 2 === 0) {
+            return registry.noopEven(id);
+          } else {
+            return registry.noopOdd(id);
+          }
+        })();
+
+        return result;
+      },
+    );
+
+    // Assert
+    expect(noopEven).toHaveBeenNthCalledWith(1, [2, 4]);
+    expect(noopOdd).toHaveBeenNthCalledWith(1, [1, 3]);
+    expect(result).toEqual(
+      new Map([
+        [1, 1],
+        [2, 2],
+        [3, 3],
+        [4, 4],
+      ]),
+    );
+  });
+
+  test('branching - binary search', async () => {
+    // Arrange
+    async function lt(arr: number[], num: number) {
+      return new Map(arr.map((id) => [id, id < num]));
+    }
+    async function gt(arr: number[], num: number) {
+      return new Map(arr.map((id) => [id, id > num]));
+    }
+
+    const lt5 = jest.fn((arr) => lt(arr, 5));
+    const gt1 = jest.fn((arr) => gt(arr, 1));
+    const lt3 = jest.fn((arr) => lt(arr, 3));
+    const lt9 = jest.fn((arr) => lt(arr, 9));
+    const gt7 = jest.fn((arr) => gt(arr, 7));
+
+    const registry = balar.scalarize({
+      lt5: def(lt5),
+
+      gt1: def(gt1),
+      lt3: def(lt3),
+
+      lt9: def(lt9),
+      gt7: def(gt7),
+    });
+
+    // Act
+    const result = await balar.execute(
+      [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+      async function search(id: number) {
+        if (await registry.lt5(id)) {
+          if (await registry.gt1(id)) {
+            if (await registry.lt3(id)) {
+              return 2;
+            }
+          }
+        } else {
+          if (await registry.lt9(id)) {
+            if (await registry.gt7(id)) {
+              return 8;
+            }
+          }
+        }
+
+        return null;
+      },
+    );
+
+    // Assert
+    expect(lt5).toHaveBeenCalledWith([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+
+    expect(gt1).toHaveBeenCalledWith([0, 1, 2, 3, 4]);
+    expect(lt3).toHaveBeenCalledWith([2, 3, 4]);
+
+    expect(lt9).toHaveBeenCalledWith([5, 6, 7, 8, 9, 10]);
+    expect(gt7).toHaveBeenCalledWith([5, 6, 7, 8]);
+
+    for (const op of [lt5, gt1, lt3, lt9, gt7]) {
+      expect(op).toHaveBeenCalledTimes(1);
+    }
+
+    expect(result).toEqual(
+      new Map([
+        [0, null],
+        [1, null],
+        [2, 2],
+        [3, null],
+        [4, null],
+        [5, null],
+        [6, null],
+        [7, null],
+        [8, 8],
+        [9, null],
+        [10, null],
+      ]),
+    );
   });
 });

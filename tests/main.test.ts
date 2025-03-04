@@ -105,33 +105,6 @@ describe('budget tests', () => {
     expect(result).toEqual(new Map());
   });
 
-  test('concurrent bulk execs using the same scalar fns should be isolated', async () => {
-    // Arrange
-    async function processor(budgetId: number): Promise<number> {
-      const currentBudget = await registry.getCurrentBudget(budgetId);
-      return currentBudget.amount;
-    }
-
-    // Act
-    const [result1, result2] = await Promise.all([
-      balar.execute([1, 2], processor),
-      balar.execute([3, 4], processor),
-    ]);
-
-    // Assert
-    const expected1 = new Map([
-      [1, 500],
-      [2, 1000],
-    ]);
-    expect(result1).toEqual(expected1);
-    const expected2 = new Map([
-      [3, 1500],
-      [4, 2000],
-    ]);
-    expect(result2).toEqual(expected2);
-    expect(spyGetCurrentBudgets).toHaveBeenCalledTimes(2);
-  });
-
   test('simple workflow with 1 checkpoint', async () => {
     // Act
     const result = await balar.execute([1], async function (id: number): Promise<number> {
@@ -242,6 +215,33 @@ describe('budget tests', () => {
     expect(spyGetBudgetSpends).toHaveBeenCalledTimes(1);
   });
 
+  test('concurrent bulk execs using the same scalar fns should be isolated', async () => {
+    // Arrange
+    async function processor(budgetId: number): Promise<number> {
+      const currentBudget = await registry.getCurrentBudget(budgetId);
+      return currentBudget.amount;
+    }
+
+    // Act
+    const [result1, result2] = await Promise.all([
+      balar.execute([1, 2], processor),
+      balar.execute([3, 4], processor),
+    ]);
+
+    // Assert
+    const expected1 = new Map([
+      [1, 500],
+      [2, 1000],
+    ]);
+    expect(result1).toEqual(expected1);
+    const expected2 = new Map([
+      [3, 1500],
+      [4, 2000],
+    ]);
+    expect(result2).toEqual(expected2);
+    expect(spyGetCurrentBudgets).toHaveBeenCalledTimes(2);
+  });
+
   test('mixing in yields before concurrent checkpoints', async () => {
     // Arrange
     // Odd numbers should fail (way over budget)
@@ -283,7 +283,7 @@ describe('budget tests', () => {
     expect(spyGetBudgetSpends).toHaveBeenCalledWith([1, 2, 3]);
   });
 
-  test('concurrent reads of the same account should coalesce into 1 shared bulk input/output', async () => {
+  test('reads of the same account should coalesce into 1 shared bulk input/output', async () => {
     // Act
     const requestIds = [1, 2, 3]; // all budgets are under the same account
     const issues = await balar.execute(
@@ -309,7 +309,7 @@ describe('budget tests', () => {
     expect(spyGetAccountsById).toHaveBeenCalledTimes(1);
   });
 
-  test('concurrent requests that patch the same account should coalesce into 1 shared bulk input/output', async () => {
+  test('requests that patch the same account should coalesce into 1 shared bulk input/output', async () => {
     // Act
     const requestIds = [1, 2, 3]; // all budgets are under the same account
     const issues = await balar.execute(

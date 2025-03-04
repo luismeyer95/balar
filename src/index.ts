@@ -44,7 +44,7 @@ type ScalarizeRegistry<R extends Record<string, RegistryEntry<any, any>>> = {
 /**
  * Due to some TypeScript limitations, it is only possible to ensure
  * correct type-checking at the registry entry level if each entry
- * configuration is wrapped in an identity function like this one.
+ * configuration is wrapped in a function like this one.
  *
  * As an added layer of type-safety, the registry's API is made to only
  * accept registry entries that have been wrapped in a call to `define()`.
@@ -63,12 +63,13 @@ export class BalarExecution<
 > {
   processor: (request: MainIn) => Promise<MainOut>;
   internalRegistry!: ToInternalRegistry<R>;
+
   queuedOperations: Set<keyof R> = new Set();
+  awaitingProcessors: Set<number> = new Set();
+  doneProcessors = 0;
+  totalProcessors = 0;
 
   concurrentExecs: Execution<unknown, unknown>[] = [];
-
-  doneCandidates = 0;
-  totalCandidates = 0;
 
   constructor({
     registry,
@@ -107,77 +108,21 @@ export class BalarExecution<
     return new Map(inputs.map((input) => [input, input]));
   }
 
-  private tryExecuteQueuedOperations(...entryNames: (keyof R)[]) {
-    // TODO: optimize
-    entryNames = entryNames.length > 0 ? entryNames : [...this.queuedOperations.keys()];
-    const executedList = entryNames.filter((opName) => this.maybeExecute(opName));
-
-    for (const executedOp of executedList) {
-      this.queuedOperations.delete(executedOp);
-    }
-  }
-
-  private maybeExecute(name: keyof R): boolean {
-    const op = this.internalRegistry[name];
-    if (op.executions.length === 0) {
-      return false;
-    }
-
-    // Checks if all candidates have reached the next checkpoint.
-    // If all concurrent executions at this time have either
-    // - called this handler's scalar function and awaiting execution
-    // - or completed execution by returning
-    // Then, we can execute the bulk function.
-    if (op.executions.length + this.doneCandidates !== this.totalCandidates) {
-      // Not all candidates have reached the next checkpoint
-      return false;
-    }
-
-    // Next checkpoint reached, run bulk operation
-
-    // For each queued call, the input is stored as a key in order
-    // to index out the result from the bulk call map. Since these
-    // inputs are transformed right before execution to allow for
-    // input merging, we need to apply an input key remap.
-    const inputs = op.executions.map((item) => item.key);
-    const mappedInputs = op.transformInputs?.(inputs) ?? this.deduplicateInputs(inputs);
-    for (const execItem of op.executions) {
-      const mappedInput = mappedInputs.get(execItem.key);
-      if (mappedInput) {
-        execItem.key = mappedInput;
-      }
-    }
-
-    // In case the transform deduplicated some inputs, the resulting
-    // map may contain duplicate values due to multiple original
-    // inputs mapping to the same transformed input.
-    const finalInputs = [...new Set(mappedInputs.values())];
-
-    console.log('executing bulk op', name, 'with', finalInputs);
-
-    op.fn(finalInputs).then((result) => {
-      for (const item of op.executions) {
-        item.resolve(result.get(item.key)!);
-      }
-      op.executions = [];
-    });
-
-    return true;
-  }
-
   async run(requests: MainIn[]): Promise<Map<MainIn, MainOut>> {
     console.log('executing plan:', requests);
     // Initialize the target total. Used to track the progress towards each
     // checkpoint during the concurrent processor calls.
-    this.totalCandidates = requests.length;
+    this.totalProcessors = requests.length;
 
     const results = await EXECUTION.run(this as any /* TODO FIX */, async () => {
-      const executions = requests.map(async (request) => {
-        const result = await this.processor(request);
+      const executions = requests.map(async (request, index) => {
+        const result = await PROCESSOR_ID.run(index, () => this.processor(request));
         console.log('yield from processor execution for request input', request);
 
-        this.doneCandidates += 1;
-        this.tryExecuteQueuedOperations();
+        this.doneProcessors += 1;
+        if (this.awaitingProcessors.size + this.doneProcessors === this.totalProcessors) {
+          this.executeCheckpoint();
+        }
 
         return result;
       });
@@ -192,6 +137,46 @@ export class BalarExecution<
     return resultsByKey;
   }
 
+  private executeCheckpoint() {
+    for (const name of this.queuedOperations) {
+      const op = this.internalRegistry[name];
+      if (op.executions.length === 0) {
+        return;
+      }
+
+      // For each queued call, the input is stored as a key in order
+      // to index out the result from the bulk call map. Since these
+      // inputs are transformed right before execution to allow for
+      // input merging, we need to apply an input key remap.
+      const inputs = op.executions.map((item) => item.key);
+      const mappedInputs = op.transformInputs?.(inputs) ?? this.deduplicateInputs(inputs);
+      for (const execItem of op.executions) {
+        const mappedInput = mappedInputs.get(execItem.key);
+        if (mappedInput) {
+          execItem.key = mappedInput;
+        }
+      }
+
+      // In case the transform deduplicated some inputs, the resulting
+      // map may contain duplicate values due to multiple original
+      // inputs mapping to the same transformed input.
+      const finalInputs = [...new Set(mappedInputs.values())];
+
+      console.log('executing bulk op', name, 'with', finalInputs);
+
+      op.fn(finalInputs).then((result) => {
+        for (const item of op.executions) {
+          item.resolve(result.get(item.key)!);
+        }
+        op.executions = [];
+      });
+    }
+
+    // Clear checkpoint buffer
+    this.queuedOperations.clear();
+    this.awaitingProcessors.clear();
+  }
+
   async nestedContextExecute<In, Out>(
     requests: In[],
     processor: (request: In) => Promise<Out>,
@@ -203,11 +188,11 @@ export class BalarExecution<
         'called nested execute()',
         this.concurrentExecs.length,
         '/',
-        this.doneCandidates,
+        this.doneProcessors,
       );
 
       // Only proceed after this if we're the last concurrent execution
-      if (this.concurrentExecs.length + this.doneCandidates < this.totalCandidates) {
+      if (this.concurrentExecs.length + this.doneProcessors < this.totalProcessors) {
         return;
       }
 
@@ -245,17 +230,28 @@ export class BalarExecution<
 
     for (const entryName of Object.keys(registry) as Array<keyof R>) {
       const scalarFn = async (input: unknown): Promise<unknown> => {
-        // When a scalar function is called, we need to keep track of which handler it came from.
-        // If an execution returns when all other concurrent executions are awaiting the next
-        // checkpoint, we should execute the bulk handler for this next checkpoint, which should
-        // be the one from the last registered scalar call.
-        //
-        // TODO: check if we should poll all handlers for execution instead.
+        const processorId = PROCESSOR_ID.getStore();
+        if (processorId == null) {
+          throw new Error('balar error: missing processor ID');
+        }
+
+        this.awaitingProcessors.add(processorId);
         this.queuedOperations.add(entryName);
 
         return new Promise((resolve) => {
           this.internalRegistry[entryName].executions.push({ key: input, resolve });
-          this.tryExecuteQueuedOperations(entryName);
+
+          // Checks if all candidates have reached the next checkpoint.
+          // If all concurrent processor executions at this time have either
+          // - called 1+ scalar functions and awaiting execution
+          // - or completed execution by returning
+          // Then, we can execute the bulk functions.
+          if (
+            this.awaitingProcessors.size + this.doneProcessors ===
+            this.totalProcessors
+          ) {
+            process.nextTick(() => this.executeCheckpoint());
+          }
         });
       };
 
@@ -275,6 +271,8 @@ let globalRegistryTemplate: BulkRegistry<
 const EXECUTION = new AsyncLocalStorage<
   BalarExecution<unknown, unknown, Record<string, CheckedRegistryEntry<unknown, unknown>>>
 >();
+
+const PROCESSOR_ID = new AsyncLocalStorage<number>();
 
 export function scalarize<R extends Record<string, CheckedRegistryEntry<any, any>>>(
   bulkOpRegistry: R,
@@ -306,6 +304,7 @@ export function scalarize<R extends Record<string, CheckedRegistryEntry<any, any
 
       console.log('executing user scalar fn', entryName, 'with', input);
 
+      // TODO: encapsulation
       return bulkContext.internalRegistry[entryName].scalarHandler(input);
     };
 
