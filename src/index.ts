@@ -111,7 +111,7 @@ export class BalarExecution<
   }
 
   async run(requests: MainIn[]): Promise<Map<MainIn, MainOut>> {
-    console.log('executing plan:', requests);
+    //console.log('executing plan:', requests);
     // Initialize the target total. Used to track the progress towards each
     // checkpoint during the concurrent processor calls.
     this.totalProcessors = requests.length;
@@ -119,7 +119,7 @@ export class BalarExecution<
     const results = await EXECUTION.run(this as any /* TODO FIX */, async () => {
       const executions = requests.map(async (request, index) => {
         const result = await PROCESSOR_ID.run(index, () => this.processor(request));
-        console.log('yield from processor execution for request input', request);
+        //console.log('yield from processor execution for request input', request);
 
         this.doneProcessors += 1;
         if (this.awaitingProcessors.size + this.doneProcessors === this.totalProcessors) {
@@ -140,7 +140,7 @@ export class BalarExecution<
   }
 
   private executeCheckpoint() {
-    console.log('executing checkpoint');
+    //console.log('executing checkpoint');
 
     if (this.queuedExecute) {
       const plan = new BalarExecution({
@@ -182,7 +182,7 @@ export class BalarExecution<
       // inputs mapping to the same transformed input.
       const finalInputs = [...new Set(mappedInputs.values())];
 
-      console.log('executing bulk op', name, 'with', finalInputs);
+      //console.log('executing bulk op', name, 'with', finalInputs);
 
       op.fn(finalInputs).then((result) => {
         for (const item of op.executions) {
@@ -208,19 +208,19 @@ export class BalarExecution<
       throw new Error('balar error: missing processor ID');
     }
 
-    this.awaitingProcessors.add(processorId);
     // NOTE: this impl does not allow for different execute processors on the same checkpoint!
     this.queuedExecute = processor as (request: unknown) => Promise<unknown>;
+    this.awaitingProcessors.add(processorId);
 
     const allResults = await new Promise(async (resolve) => {
       this.concurrentExecs.push({ key: requests, resolve });
 
-      console.log(
-        'called nested execute()',
-        this.concurrentExecs.length,
-        '/',
-        this.totalProcessors,
-      );
+      //console.log(
+      //   'called nested execute()',
+      //   this.concurrentExecs.length,
+      //   '/',
+      //   this.totalProcessors,
+      // );
 
       if (this.awaitingProcessors.size + this.doneProcessors === this.totalProcessors) {
         process.nextTick(() => this.executeCheckpoint());
@@ -316,7 +316,7 @@ export function scalarize<R extends Record<string, CheckedRegistryEntry<any, any
         throw new Error(`balar error: no scalar function registered for ${entryName}`);
       }
 
-      console.log('executing user scalar fn', entryName, 'with', input);
+      //console.log('executing user scalar fn', entryName, 'with', input);
 
       // TODO: encapsulation
       return bulkContext.internalRegistry[entryName].scalarHandler(input);
