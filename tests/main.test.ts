@@ -260,7 +260,7 @@ describe('tests', () => {
       expect(spyGetCurrentBudgets).toHaveBeenCalledTimes(2);
     });
 
-    test('mixing in yields before concurrent checkpoints', async () => {
+    test('processor should trigger checkpoint by returning', async () => {
       // Arrange
       // Odd numbers should fail (way over budget)
       budgetsRepo.spendOnBudget(1, 1000);
@@ -300,10 +300,49 @@ describe('tests', () => {
       expect(spyGetBudgetSpends).toHaveBeenCalledTimes(1);
       expect(spyGetBudgetSpends).toHaveBeenCalledWith([1, 2, 3]);
     });
+
+    test('checkpoint-triggering processor calls multiple scalar fns', async () => {
+      async function noop(arr: number[]) {
+        return new Map(arr.map((id) => [id, id]));
+      }
+      const noopMock1 = jest.fn(noop);
+      const noopMock2 = jest.fn(noop);
+      const registry = balar.scalarize({
+        noop1: def(noopMock1),
+        noop2: def(noopMock2),
+      });
+
+      // Act
+      const budgetIds = [1, 2, 3, 4];
+      const issues = await balar.execute(budgetIds, async (n) => {
+        let p1 = registry.noop1(n);
+        let p2 = Promise.resolve(0);
+
+        if (n >= 3) {
+          p2 = registry.noop2(n);
+        }
+
+        return (await p1) + (await p2);
+      });
+
+      // Assert
+      const expected = new Map([
+        [1, 1],
+        [2, 2],
+        [3, 6],
+        [4, 8],
+      ]);
+      expect(issues).toEqual(expected);
+
+      expect(noopMock1).toHaveBeenCalledTimes(1);
+      expect(noopMock1).toHaveBeenCalledWith([1, 2, 3, 4]);
+      expect(noopMock2).toHaveBeenCalledTimes(1);
+      expect(noopMock2).toHaveBeenCalledWith([3, 4]);
+    });
   });
 
   describe('input/output mapping', () => {
-    test('reads of the same account should coalesce into 1 shared bulk input/output', async () => {
+    test('should deduplicate equal inputs to bulk fn and share the result across processors', async () => {
       // Act
       const requestIds = [1, 2, 3]; // all budgets are under the same account
       const issues = await balar.execute(
@@ -329,7 +368,7 @@ describe('tests', () => {
       expect(spyGetAccountsById).toHaveBeenCalledTimes(1);
     });
 
-    test('requests that patch the same account should coalesce into 1 shared bulk input/output', async () => {
+    test('should invoke custom input transform strategy (merge)', async () => {
       // Act
       const requestIds = [1, 2, 3]; // all budgets are under the same account
       const issues = await balar.execute(
@@ -365,7 +404,7 @@ describe('tests', () => {
   });
 
   describe('exceptions', () => {
-    test('simple workflow with exception thrown inline', async () => {
+    test('should bubble up exception thrown directly inside processor', async () => {
       // Act
       const executeCall = () =>
         balar.execute(
@@ -384,10 +423,38 @@ describe('tests', () => {
       await expect(executeCall).rejects.toThrow('budget does not exist');
       expect(spyGetCurrentBudgets).toHaveBeenCalledTimes(1);
     });
+
+    test('should bubble up exception thrown inside bulk fn', async () => {
+      const mayThrow = jest.fn(async (arr: number[]) => {
+        return new Map(
+          arr.map((id) => {
+            if (id === 777) {
+              throw new Error('budget does not exist');
+            }
+            return [id, id];
+          }),
+        );
+      });
+
+      const registry = balar.scalarize({
+        mayThrow: def(mayThrow),
+      });
+
+      // Act
+      const executeCall = () =>
+        balar.execute([1, 2, 777], async function (id: number) {
+          return registry.mayThrow(id);
+        });
+
+      // Assert
+      await expect(executeCall).rejects.toThrow('budget does not exist');
+      expect(mayThrow).toHaveBeenCalledTimes(1);
+      expect(mayThrow).toHaveBeenCalledWith([1, 2, 777]);
+    });
   });
 
   describe('branching', () => {
-    test('branching - simple branching', async () => {
+    test('simple branching', async () => {
       // Arrange
       async function noop(arr: number[]) {
         return new Map(arr.map((id) => [id, id]));
@@ -427,7 +494,7 @@ describe('tests', () => {
       );
     });
 
-    test('branching - scalar vs execute', async () => {
+    test('scalar vs execute', async () => {
       // Arrange
       async function noop(arr: number[]) {
         return new Map(arr.map((id) => [id, id]));
@@ -467,7 +534,7 @@ describe('tests', () => {
       );
     });
 
-    test('branching - binary search', async () => {
+    test('binary search', async () => {
       // Arrange
       async function lt(arr: number[], num: number) {
         return new Map(arr.map((id) => [id, id < num]));

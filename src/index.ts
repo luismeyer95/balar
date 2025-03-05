@@ -4,7 +4,11 @@ export type BulkFn<In, Out> = (request: In[]) => Promise<Map<In, Out>>;
 export type ProcessorFn<In, Out> = (request: In) => Promise<Out>;
 export type TransformInputsFn<In> = (_: NoInfer<In>[]) => Map<NoInfer<In>, NoInfer<In>>;
 export type ScalarFn<In, Out> = (request: In) => Promise<Out>;
-export type Execution<In, Out> = { key: In; resolve: (ret: Out) => void };
+export type Execution<In, Out> = {
+  key: In;
+  resolve: (ret: Out) => void;
+  reject: (err: Error) => void;
+};
 
 export type RegistryEntry<In, Out> = {
   fn: BulkFn<In, Out>;
@@ -149,13 +153,22 @@ export class BalarExecution<
       });
 
       const allRequests = this.concurrentExecs.flatMap((item) => item.key);
-      plan.run(allRequests).then((allResults) => {
-        for (const execution of this.concurrentExecs) {
-          execution.resolve(allResults);
-        }
-        // TODO: should the clear come before the bulk response handling?
-        this.concurrentExecs = [];
-      });
+      plan
+        .run(allRequests)
+        .then((allResults) => {
+          for (const execution of this.concurrentExecs) {
+            execution.resolve(allResults);
+          }
+        })
+        .catch((err) => {
+          for (const execution of this.concurrentExecs) {
+            execution.reject(err);
+          }
+        })
+        .finally(() => {
+          // TODO: should the clear come before the bulk response handling?
+          this.concurrentExecs = [];
+        });
     }
 
     for (const name of this.queuedOperations) {
@@ -184,13 +197,21 @@ export class BalarExecution<
 
       //console.log('executing bulk op', name, 'with', finalInputs);
 
-      op.fn(finalInputs).then((result) => {
-        for (const item of op.executions) {
-          item.resolve(result.get(item.key)!);
-        }
-        // TODO: should the clear come before the bulk response handling?
-        op.executions = [];
-      });
+      op.fn(finalInputs)
+        .then((result) => {
+          for (const item of op.executions) {
+            item.resolve(result.get(item.key)!);
+          }
+        })
+        .catch((err) => {
+          for (const item of op.executions) {
+            item.reject(err);
+          }
+        })
+        .finally(() => {
+          // TODO: should the clear come before the bulk response handling?
+          op.executions = [];
+        });
     }
 
     // Clear checkpoint buffer
@@ -212,8 +233,8 @@ export class BalarExecution<
     this.queuedExecute = processor as (request: unknown) => Promise<unknown>;
     this.awaitingProcessors.add(processorId);
 
-    const allResults = await new Promise(async (resolve) => {
-      this.concurrentExecs.push({ key: requests, resolve });
+    const allResults = await new Promise(async (resolve, reject) => {
+      this.concurrentExecs.push({ key: requests, resolve, reject });
 
       //console.log(
       //   'called nested execute()',
@@ -252,8 +273,12 @@ export class BalarExecution<
         this.awaitingProcessors.add(processorId);
         this.queuedOperations.add(entryName);
 
-        return new Promise((resolve) => {
-          this.internalRegistry[entryName].executions.push({ key: input, resolve });
+        return new Promise((resolve, reject) => {
+          this.internalRegistry[entryName].executions.push({
+            key: input,
+            resolve,
+            reject,
+          });
 
           // Checks if all candidates have reached the next checkpoint.
           // If all concurrent processor executions at this time have either
