@@ -1,50 +1,17 @@
 import { AsyncLocalStorage } from 'async_hooks';
+import {
+  CheckedRegistryEntry,
+  RegistryEntry,
+  BulkFn,
+  InternalRegistry,
+  ProcessorFn,
+  Execution,
+  ScalarizeRegistry,
+} from './types';
 
-export type BulkFn<In, Out> = (request: In[]) => Promise<Map<In, Out>>;
-export type ProcessorFn<In, Out> = (request: In) => Promise<Out>;
-export type TransformInputsFn<In> = (_: NoInfer<In>[]) => Map<NoInfer<In>, NoInfer<In>>;
-export type ScalarFn<In, Out> = (request: In) => Promise<Out>;
-export type Execution<In, Out> = {
-  key: In;
-  resolve: (ret: Out) => void;
-  reject: (err: Error) => void;
-};
-
-export type RegistryEntry<In, Out> = {
-  fn: BulkFn<In, Out>;
-  transformInputs?: TransformInputsFn<In>;
-};
-type CheckedRegistryEntry<I, O> = RegistryEntry<I, O> & { __brand: 'checked' };
-export type InternalRegistryEntry<In, Out> = RegistryEntry<In, Out> & {
-  scalarHandler: ScalarFn<In, Out>;
-  executions: Execution<In, Out>[];
-};
-
-export type ToInternalRegistry<T extends Record<string, RegistryEntry<any, any>>> = {
-  [K in keyof T]: T[K] extends {
-    fn: (inputs: Array<infer I>) => Promise<Map<infer I, infer O>>;
-  }
-    ? InternalRegistryEntry<I, O>
-    : never;
-};
-
-export class BulkRegistry<R extends Record<string, CheckedRegistryEntry<any, any>>> {
+export class BulkRegistry<R extends Record<string, CheckedRegistryEntry<any, any, any>>> {
   constructor(public readonly entries: R) {}
 }
-
-/**
- * Takes a bulk function and converts its signature to a scalar function.
- */
-type ScalarizeFn<F> = F extends (input: Array<infer I>) => Promise<Map<infer I, infer O>>
-  ? (input: I) => Promise<O>
-  : never;
-
-/**
- * Takes a registry and converts it to a record of scalar functions.
- */
-type ScalarizeRegistry<R extends Record<string, RegistryEntry<any, any>>> = {
-  [K in keyof R]: ScalarizeFn<R[K]['fn']>;
-};
 
 /**
  * Due to some TypeScript limitations, it is only possible to ensure
@@ -54,20 +21,34 @@ type ScalarizeRegistry<R extends Record<string, RegistryEntry<any, any>>> = {
  * As an added layer of type-safety, the registry's API is made to only
  * accept registry entries that have been wrapped in a call to `define()`.
  */
-export function def<I, O>(
-  entry: RegistryEntry<I, O> | BulkFn<I, O>,
-): CheckedRegistryEntry<I, O> {
+export function def<I, O, Args extends readonly unknown[]>(
+  entry: RegistryEntry<I, O, Args> | BulkFn<I, O, Args>,
+): CheckedRegistryEntry<I, O, Args> {
   const registryEntry = 'fn' in entry ? entry : { fn: entry };
-  return registryEntry as CheckedRegistryEntry<I, O>;
+
+  registryEntry.getCallId ??= (args) => {
+    if (!args.length) {
+      // Optimization for no additionnal args
+      return 0;
+    }
+    // Note: may produce different IDs on objects with different key order
+    return JSON.stringify(args);
+  };
+
+  registryEntry.transformInputs ??= (inputs: I[]): Map<I, I> => {
+    return new Map(inputs.map((input) => [input, input]));
+  };
+
+  return registryEntry as CheckedRegistryEntry<I, O, Args>;
 }
 
 export class BalarExecution<
   MainIn,
   MainOut,
-  R extends Record<string, CheckedRegistryEntry<any, any>>,
+  R extends Record<string, CheckedRegistryEntry<any, any, any>>,
 > {
   processor: (request: MainIn) => Promise<MainOut>;
-  internalRegistry!: ToInternalRegistry<R>;
+  internalRegistry!: InternalRegistry<R>;
 
   queuedExecute: ProcessorFn<unknown, unknown> | null = null;
   concurrentExecs: Execution<unknown, unknown>[] = [];
@@ -89,7 +70,7 @@ export class BalarExecution<
   }
 
   private registerInternal(registry: R) {
-    this.internalRegistry = {} as ToInternalRegistry<R>;
+    this.internalRegistry = {} as InternalRegistry<R>;
     // For each type of bulk operation, we need 3 things:
     // - the bulk function to execute when all candidates have reached the next checkpoint
     // - a promise queue to keep track of calls to the scalarized functions we provide to the processors
@@ -100,24 +81,17 @@ export class BalarExecution<
     for (const [name, registryEntry] of Object.entries(registry) as Array<
       [keyof R, R[keyof R]]
     >) {
-      const executions: Execution<unknown, unknown>[] = [];
-
       this.internalRegistry[name] = {
         ...registryEntry,
-        executions: executions,
+        executionGroups: new Map(),
         scalarHandler: scalarHandlers[name],
-      } as unknown as ToInternalRegistry<R>[keyof R]; // TODO: fix types
+      } as unknown as InternalRegistry<R>[keyof R]; // TODO: fix types
     }
-  }
-
-  private deduplicateInputs<In>(inputs: In[]): Map<In, In> {
-    return new Map(inputs.map((input) => [input, input]));
   }
 
   async run(requests: MainIn[]): Promise<Map<MainIn, MainOut>> {
     //console.log('executing plan:', requests);
-    // Initialize the target total. Used to track the progress towards each
-    // checkpoint during the concurrent processor calls.
+
     this.totalProcessors = requests.length;
 
     const results = await EXECUTION.run(this as any /* TODO FIX */, async () => {
@@ -155,63 +129,49 @@ export class BalarExecution<
       const allRequests = this.concurrentExecs.flatMap((item) => item.key);
       plan
         .run(allRequests)
-        .then((allResults) => {
-          for (const execution of this.concurrentExecs) {
-            execution.resolve(allResults);
-          }
-        })
-        .catch((err) => {
-          for (const execution of this.concurrentExecs) {
-            execution.reject(err);
-          }
-        })
-        .finally(() => {
-          // TODO: should the clear come before the bulk response handling?
-          this.concurrentExecs = [];
-        });
+        .then((allResults) =>
+          this.concurrentExecs.forEach((exec) => exec.resolve(allResults)),
+        )
+        .catch((err) => this.concurrentExecs.forEach((exec) => exec.reject(err)))
+        .finally(() => (this.concurrentExecs = []));
     }
 
     for (const name of this.queuedOperations) {
       const op = this.internalRegistry[name];
-      if (op.executions.length === 0) {
+      if (op.executionGroups.size === 0) {
         return;
       }
 
-      // For each queued call, the input is stored as a key in order
-      // to index out the result from the bulk call map. Since these
-      // inputs are transformed right before execution to allow for
-      // input merging, we need to apply an input key remap.
-      const inputs = op.executions.map((item) => item.key);
-      const mappedInputs = op.transformInputs?.(inputs) ?? this.deduplicateInputs(inputs);
-      for (const execItem of op.executions) {
-        const mappedInput = mappedInputs.get(execItem.key);
-        if (mappedInput) {
-          execItem.key = mappedInput;
+      for (const call of op.executionGroups.values()) {
+        // For each queued call, the input is stored as a key in order
+        // to index out the result from the bulk call map. Since these
+        // inputs are transformed right before execution to allow for
+        // input merging, we need to apply an input key remap.
+        const inputs = call.executions.map((item) => item.key);
+        const mappedInputs = op.transformInputs(inputs);
+        for (const execItem of call.executions) {
+          const mappedInput = mappedInputs.get(execItem.key);
+          if (mappedInput) {
+            execItem.key = mappedInput;
+          }
         }
+
+        // In case the transform deduplicated some inputs, the resulting
+        // map may contain duplicate values due to multiple original
+        // inputs mapping to the same transformed input.
+        const finalInputs = [...new Set(mappedInputs.values())];
+
+        //console.log('executing bulk op', name, 'with', finalInputs);
+
+        op.fn(finalInputs, ...call.extraArgs)
+          .then((result) =>
+            call.executions.forEach((item) => item.resolve(result.get(item.key))),
+          )
+          .catch((err) => call.executions.forEach((item) => item.reject(err)))
+          .finally(() => (call.executions = []));
       }
 
-      // In case the transform deduplicated some inputs, the resulting
-      // map may contain duplicate values due to multiple original
-      // inputs mapping to the same transformed input.
-      const finalInputs = [...new Set(mappedInputs.values())];
-
-      //console.log('executing bulk op', name, 'with', finalInputs);
-
-      op.fn(finalInputs)
-        .then((result) => {
-          for (const item of op.executions) {
-            item.resolve(result.get(item.key)!);
-          }
-        })
-        .catch((err) => {
-          for (const item of op.executions) {
-            item.reject(err);
-          }
-        })
-        .finally(() => {
-          // TODO: should the clear come before the bulk response handling?
-          op.executions = [];
-        });
+      op.executionGroups.clear();
     }
 
     // Clear checkpoint buffer
@@ -264,7 +224,7 @@ export class BalarExecution<
     const scalarHandlers = {} as ScalarizeRegistry<R>;
 
     for (const entryName of Object.keys(registry) as Array<keyof R>) {
-      const scalarFn = async (input: unknown): Promise<unknown> => {
+      const scalarFn = async (input: unknown, args: unknown[]): Promise<unknown> => {
         const processorId = PROCESSOR_ID.getStore();
         if (processorId == null) {
           throw new Error('balar error: missing processor ID');
@@ -273,12 +233,22 @@ export class BalarExecution<
         this.awaitingProcessors.add(processorId);
         this.queuedOperations.add(entryName);
 
+        const registryEntry = this.internalRegistry[entryName];
+        const callId = registryEntry.getCallId(args);
+
         return new Promise((resolve, reject) => {
-          this.internalRegistry[entryName].executions.push({
+          const execGroup = registryEntry.executionGroups.get(callId) ?? {
+            executions: [],
+            extraArgs: args,
+          };
+
+          execGroup.executions.push({
             key: input,
             resolve,
             reject,
           });
+
+          registryEntry.executionGroups.set(callId, execGroup);
 
           // Checks if all candidates have reached the next checkpoint.
           // If all concurrent processor executions at this time have either
@@ -299,21 +269,33 @@ export class BalarExecution<
 
     return scalarHandlers;
   }
+
+  callScalarHandler(entryName: string, input: unknown, ...args: unknown[]) {
+    if (!(entryName in this.internalRegistry)) {
+      throw new Error(`balar error: no scalar function registered for ${entryName}`);
+    }
+
+    return this.internalRegistry[entryName].scalarHandler(input, ...args);
+  }
 }
 
 ////////////////////////////////////////
 
 let globalRegistryTemplate: BulkRegistry<
-  Record<string, CheckedRegistryEntry<unknown, unknown>>
+  Record<string, CheckedRegistryEntry<unknown, unknown, unknown[]>>
 > | null;
 
 const EXECUTION = new AsyncLocalStorage<
-  BalarExecution<unknown, unknown, Record<string, CheckedRegistryEntry<unknown, unknown>>>
+  BalarExecution<
+    unknown,
+    unknown,
+    Record<string, CheckedRegistryEntry<unknown, unknown, unknown[]>>
+  >
 >();
 
 const PROCESSOR_ID = new AsyncLocalStorage<number>();
 
-export function scalarize<R extends Record<string, CheckedRegistryEntry<any, any>>>(
+export function scalarize<R extends Record<string, CheckedRegistryEntry<any, any, any>>>(
   bulkOpRegistry: R,
 ): ScalarizeRegistry<R> {
   // Store the registry as a global to use as template.
@@ -328,7 +310,10 @@ export function scalarize<R extends Record<string, CheckedRegistryEntry<any, any
   const scalarHandlers = {} as ScalarizeRegistry<R>;
 
   for (const entryName of Object.keys(bulkOpRegistry)) {
-    const scalarFn = async (input: unknown): Promise<unknown> => {
+    const scalarFn = async (
+      input: unknown,
+      ...extraArgs: unknown[]
+    ): Promise<unknown> => {
       const bulkContext = EXECUTION.getStore();
 
       if (!bulkContext) {
@@ -337,14 +322,9 @@ export function scalarize<R extends Record<string, CheckedRegistryEntry<any, any
         );
       }
 
-      if (!(entryName in bulkContext.internalRegistry)) {
-        throw new Error(`balar error: no scalar function registered for ${entryName}`);
-      }
-
       //console.log('executing user scalar fn', entryName, 'with', input);
 
-      // TODO: encapsulation
-      return bulkContext.internalRegistry[entryName].scalarHandler(input);
+      return bulkContext.callScalarHandler(entryName, input, extraArgs);
     };
 
     scalarHandlers[entryName as keyof R] = scalarFn as ScalarizeRegistry<R>[keyof R];
@@ -372,6 +352,5 @@ export async function execute<In, Out>(
     return execution.run(requests);
   }
 
-  // Sync all concurrent execute() calls, then execute and get back ALL the results
   return execution.nestedContextExecute(requests, processor);
 }

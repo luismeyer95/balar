@@ -188,6 +188,35 @@ describe('tests', () => {
       expect(spyGetCurrentBudgets).toHaveBeenCalledTimes(1);
       expect(spyUpdateBudgets).toHaveBeenCalledTimes(1);
     });
+
+    test('bulk fn with extended arglist', async () => {
+      async function bulkMul(arr: number[], rhs: number) {
+        return new Map(arr.map((id) => [id, id * rhs]));
+      }
+
+      const spyBulkMul = jest.fn(bulkMul);
+      const registry = balar.scalarize({
+        mul: def(spyBulkMul),
+      });
+
+      // Act
+      const budgetIds = [1, 2, 3, 4];
+      const issues = await balar.execute(budgetIds, async (n) => {
+        return n % 2 === 0 ? registry.mul(n, 2) : registry.mul(n, 3);
+      });
+
+      // Assert
+      const expected = new Map([
+        [1, 3],
+        [2, 4],
+        [3, 9],
+        [4, 8],
+      ]);
+      expect(issues).toEqual(expected);
+      expect(spyBulkMul).toHaveBeenCalledTimes(2);
+      expect(spyBulkMul).toHaveBeenCalledWith([1, 3], 3);
+      expect(spyBulkMul).toHaveBeenCalledWith([2, 4], 2);
+    });
   });
 
   describe('concurrent checkpoints', () => {
@@ -543,71 +572,55 @@ describe('tests', () => {
         return new Map(arr.map((id) => [id, id > num]));
       }
 
-      const lt5 = jest.fn((arr) => lt(arr, 5));
-      const gt1 = jest.fn((arr) => gt(arr, 1));
-      const lt3 = jest.fn((arr) => lt(arr, 3));
-      const lt9 = jest.fn((arr) => lt(arr, 9));
-      const gt7 = jest.fn((arr) => gt(arr, 7));
+      const spyLt = jest.fn(lt);
+      const spyGt = jest.fn(gt);
 
       const registry = balar.scalarize({
-        lt5: def(lt5),
-
-        gt1: def(gt1),
-        lt3: def(lt3),
-
-        lt9: def(lt9),
-        gt7: def(gt7),
+        lt: def(spyLt),
+        gt: def(spyGt),
       });
 
       // Act
       const result = await balar.execute(
-        [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+        [0, 1, 2, 3, 4, 5, 6, 7, 8],
         async function search(id: number) {
-          if (await registry.lt5(id)) {
-            if (await registry.gt1(id)) {
-              if (await registry.lt3(id)) {
-                return 2;
-              }
+          if (await registry.lt(id, 5)) {
+            if (await registry.gt(id, 2)) {
+              return id;
+            } else if (await registry.lt(id, 3)) {
+              return id;
             }
-          } else {
-            if (await registry.lt9(id)) {
-              if (await registry.gt7(id)) {
-                return 8;
-              }
+          } else if (await registry.lt(id, 9)) {
+            if (await registry.gt(id, 6)) {
+              return id;
+            } else if (await registry.lt(id, 7)) {
+              return id;
             }
           }
-
-          return null;
+          return id;
         },
       );
 
       // Assert
-      expect(lt5).toHaveBeenCalledWith([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+      expect(spyLt).toHaveBeenCalledWith([0, 1, 2, 3, 4, 5, 6, 7, 8], 5);
 
-      expect(gt1).toHaveBeenCalledWith([0, 1, 2, 3, 4]);
-      expect(lt3).toHaveBeenCalledWith([2, 3, 4]);
+      expect(spyGt).toHaveBeenCalledWith([0, 1, 2, 3, 4], 2);
+      expect(spyLt).toHaveBeenCalledWith([0, 1, 2], 3);
 
-      expect(lt9).toHaveBeenCalledWith([5, 6, 7, 8, 9, 10]);
-      expect(gt7).toHaveBeenCalledWith([5, 6, 7, 8]);
+      expect(spyLt).toHaveBeenCalledWith([5, 6, 7, 8], 9);
 
-      for (const op of [lt5, gt1, lt3, lt9, gt7]) {
-        expect(op).toHaveBeenCalledTimes(1);
-      }
+      expect(spyGt).toHaveBeenCalledWith([5, 6, 7, 8], 6);
+      expect(spyLt).toHaveBeenCalledWith([5, 6], 7);
+
+      expect(spyLt).toHaveBeenCalledTimes(4);
+      expect(spyGt).toHaveBeenCalledTimes(2);
 
       expect(result).toEqual(
-        new Map([
-          [0, null],
-          [1, null],
-          [2, 2],
-          [3, null],
-          [4, null],
-          [5, null],
-          [6, null],
-          [7, null],
-          [8, 8],
-          [9, null],
-          [10, null],
-        ]),
+        new Map(
+          Array(9)
+            .fill(0)
+            .map((_, i) => [i, i]),
+        ),
       );
     });
   });
@@ -753,6 +766,72 @@ describe('tests', () => {
         [accountId2, { accountId: accountId2, amount: 2500 }], // budget 5
       ]);
       expect(result).toEqual(expected);
+    });
+  });
+
+  describe('extra arguments', () => {
+    async function bulkMul(arr: number[], rhs: number) {
+      return new Map(arr.map((id) => [id, id * rhs]));
+    }
+    async function bulkMulObj(arr: number[], { rhs }: { rhs: number }) {
+      return new Map(arr.map((id) => [id, id * rhs]));
+    }
+
+    const spyBulkMul = jest.fn(bulkMul);
+    const spyBulkMulObj = jest.fn(bulkMulObj);
+
+    beforeEach(() => {
+      jest.clearAllMocks();
+    });
+
+    test('bulk fn with extended arglist', async () => {
+      let registry = balar.scalarize({
+        mul: def(spyBulkMul),
+      });
+
+      // Act
+      const budgetIds = [1, 2, 3, 4];
+      const issues = await balar.execute(budgetIds, async (n) => {
+        return n % 2 === 0 ? registry.mul(n, 2) : registry.mul(n, 3);
+      });
+
+      // Assert
+      const expected = new Map([
+        [1, 3],
+        [2, 4],
+        [3, 9],
+        [4, 8],
+      ]);
+      expect(issues).toEqual(expected);
+      expect(spyBulkMul).toHaveBeenCalledTimes(2);
+      expect(spyBulkMul).toHaveBeenCalledWith([1, 3], 3);
+      expect(spyBulkMul).toHaveBeenCalledWith([2, 4], 2);
+    });
+
+    test('extra object arg with custom call id resolver', async () => {
+      let registry = balar.scalarize({
+        mulObj: def(spyBulkMulObj),
+      });
+
+      // Act
+      const budgetIds = [1, 2, 3, 4];
+      const issues = await balar.execute(budgetIds, async (n) => {
+        return n % 2 === 0
+          ? registry.mulObj(n, { rhs: 2 })
+          : registry.mulObj(n, { rhs: 3 });
+      });
+
+      // Assert
+      const expected = new Map([
+        [1, 3],
+        [2, 4],
+        [3, 9],
+        [4, 8],
+      ]);
+      expect(issues).toEqual(expected);
+      expect(spyBulkMulObj).toHaveBeenCalledTimes(2);
+      expect(spyBulkMulObj).toHaveBeenCalledWith([1, 3], { rhs: 3 });
+      expect(spyBulkMulObj).toHaveBeenCalledWith([2, 4], { rhs: 2 });
     });
   });
 });

@@ -1,7 +1,8 @@
 import { AccountsRepository } from './fakes/budget.fake';
-import { BulkFn } from '../src';
 
 test('type testing - registry API', () => {
+  type BulkFn<In, Out> = (request: In[]) => Promise<Map<In, Out>>;
+
   type RegisterEntry<I, O> = {
     fn: (i: I[]) => Promise<Map<I, O>>;
     transformInputs?: (i: NoInfer<I>) => NoInfer<I>;
