@@ -12,25 +12,18 @@ export type ScalarFn<In, Out, Args extends readonly unknown[]> = (
 export type RegistryEntry<In, Out, Args extends readonly unknown[]> = {
   fn: BulkFn<In, Out, Args>;
   transformInputs?: TransformInputsFn<In>;
-  getCallId?: (extraArgs: Args) => string | number;
+  getArgsId?: (extraArgs: Args) => string;
 };
 
-type CheckedRegistryEntry<I, O, Args extends readonly unknown[]> = RegistryEntry<
-  I,
-  O,
-  Args
+type CheckedRegistryEntry<I, O, Args extends readonly unknown[]> = Required<
+  RegistryEntry<I, O, Args>
 > & { __brand: 'checked' };
 
-export type InternalRegistryEntry<In, Out, Args extends readonly unknown[]> = Required<
-  RegistryEntry<In, Out, Args>
-> & {
-  scalarHandler: ScalarFn<In, Out, Args>;
-  executionGroups: Map<string | number, ExecutionGroup<In, Out, Args>>;
-};
-
-export type ExecutionGroup<In, Out, Args extends readonly unknown[]> = {
-  executions: Execution<In, Out>[];
+export type InternalRegistryEntry<In, Out, Args extends readonly unknown[]> = {
+  fn: BulkFn<In, Out, Args>;
   extraArgs: Args;
+  executions: Execution<In, Out>[];
+  transformInputs: TransformInputsFn<In>;
 };
 
 export type Execution<In, Out> = {
@@ -56,6 +49,14 @@ type ScalarizeFn<F> = F extends (
 ) => Promise<Map<infer I, infer O>>
   ? (input: I, ...args: Args) => Promise<O>
   : never;
+
+/**
+ * Takes a class containing bulk functions and converts it to a class
+ * containing scalar functions.
+ */
+export type ScalarizeObject<O> = {
+  [K in keyof O as O[K] extends BulkFn<any, any, any> ? K : never]: ScalarizeFn<O[K]>;
+};
 
 /**
  * Takes a registry and converts it to a record of scalar functions.

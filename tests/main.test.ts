@@ -776,19 +776,28 @@ describe('tests', () => {
     async function bulkMulObj(arr: number[], { rhs }: { rhs: number }) {
       return new Map(arr.map((id) => [id, id * rhs]));
     }
+    async function bulkAdd3(arr: number[], two: number, three: number) {
+      return new Map(arr.map((id) => [id, id + two + three]));
+    }
 
     const spyBulkMul = jest.fn(bulkMul);
     const spyBulkMulObj = jest.fn(bulkMulObj);
+    const spyBulkAdd3 = jest.fn(bulkAdd3);
+
+    const registry = balar.scalarize({
+      mul: def(spyBulkMul),
+      mulObj: def(spyBulkMulObj),
+      add3: def({
+        fn: spyBulkAdd3,
+        getArgsId: ([two, three]) => (two + three).toString(),
+      }),
+    });
 
     beforeEach(() => {
       jest.clearAllMocks();
     });
 
     test('bulk fn with extended arglist', async () => {
-      let registry = balar.scalarize({
-        mul: def(spyBulkMul),
-      });
-
       // Act
       const budgetIds = [1, 2, 3, 4];
       const issues = await balar.execute(budgetIds, async (n) => {
@@ -808,11 +817,7 @@ describe('tests', () => {
       expect(spyBulkMul).toHaveBeenCalledWith([2, 4], 2);
     });
 
-    test('extra object arg with custom call id resolver', async () => {
-      let registry = balar.scalarize({
-        mulObj: def(spyBulkMulObj),
-      });
-
+    test('extra object arg with default args stringify resolver', async () => {
       // Act
       const budgetIds = [1, 2, 3, 4];
       const issues = await balar.execute(budgetIds, async (n) => {
@@ -832,6 +837,29 @@ describe('tests', () => {
       expect(spyBulkMulObj).toHaveBeenCalledTimes(2);
       expect(spyBulkMulObj).toHaveBeenCalledWith([1, 3], { rhs: 3 });
       expect(spyBulkMulObj).toHaveBeenCalledWith([2, 4], { rhs: 2 });
+    });
+
+    test('extra object arg with custom args id resolver', async () => {
+      function isEven(n: number) {
+        return n % 2 === 0;
+      }
+
+      // Act
+      const budgetIds = [1, 2, 3];
+      const issues = await balar.execute(budgetIds, async (n) => {
+        const extra = [isEven(n) ? 2 : 3, isEven(n) ? 3 : 2] as const;
+        return registry.add3(n, ...extra);
+      });
+
+      // Assert
+      const expected = new Map([
+        [1, 6],
+        [2, 7],
+        [3, 8],
+      ]);
+      expect(issues).toEqual(expected);
+      expect(spyBulkAdd3).toHaveBeenCalledTimes(1);
+      expect(spyBulkAdd3).toHaveBeenCalledWith([1, 2, 3], 3, 2);
     });
   });
 });
