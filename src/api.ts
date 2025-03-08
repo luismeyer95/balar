@@ -15,7 +15,11 @@ export type RegistryEntry<In, Out, Args extends readonly unknown[]> = {
   getArgsId?: (extraArgs: Args) => string;
 };
 
-type CheckedRegistryEntry<I, O, Args extends readonly unknown[]> = Required<
+export type CheckedRegistryEntry<I, O, Args extends readonly unknown[]> = Required<
+  RegistryEntry<I, O, Args>
+> & { __brand: 'checked' };
+
+export type CheckedBulkRegistryEntry<I, O, Args extends readonly unknown[]> = Required<
   RegistryEntry<I, O, Args>
 > & { __brand: 'checked' };
 
@@ -40,6 +44,10 @@ export type InternalRegistry<T extends Record<string, RegistryEntry<any, any, an
     : never;
 };
 
+export type ExecuteOptions = {
+  concurrency?: number;
+};
+
 /**
  * Takes a bulk function and converts its signature to a scalar function.
  */
@@ -61,6 +69,6 @@ export type ScalarizeObject<O> = {
 /**
  * Takes a registry and converts it to a record of scalar functions.
  */
-type ScalarizeRegistry<R extends Record<string, RegistryEntry<any, any, any>>> = {
+export type ScalarizeRegistry<R extends Record<string, RegistryEntry<any, any, any>>> = {
   [K in keyof R]: ScalarizeFn<R[K]['fn']>;
 };

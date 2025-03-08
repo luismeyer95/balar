@@ -8,7 +8,10 @@ import {
   Execution,
   ScalarizeRegistry,
   InternalRegistryEntry,
-} from './types';
+  ExecuteOptions,
+} from './api';
+import { DEFAULT_MAX_CONCURRENT_EXECUTIONS } from './constants';
+import { chunk } from './utils';
 
 export class BulkRegistry<R extends Record<string, CheckedRegistryEntry<any, any, any>>> {
   constructor(public readonly entries: R) {}
@@ -43,58 +46,80 @@ export function def<I, O, Args extends readonly unknown[]>(
   return registryEntry as CheckedRegistryEntry<I, O, Args>;
 }
 
+// export function bulk<I, O, Args extends readonly unknown[]>(
+//   entry: RegistryEntry<I, O, Args> | BulkFn<I, O, Args>,
+// ): CheckedBulkRegistryEntry<I, O, Args> {
+//   return def(entry) as CheckedBulkRegistryEntry<I, O, Args>;
+// }
+
 export class BalarExecution<MainIn, MainOut> {
-  processor: (request: MainIn) => Promise<MainOut>;
-  internalRegistry: Record<string, InternalRegistryEntry<unknown, unknown, unknown[]>> =
-    {};
+  internalRegistry: Map<string, InternalRegistryEntry<unknown, unknown, unknown[]>> =
+    new Map();
 
   queuedExecute: ProcessorFn<unknown, unknown> | null = null;
   concurrentExecs: Execution<unknown, unknown>[] = [];
+
   queuedOperations: Set<string> = new Set();
   awaitingProcessors: Set<number> = new Set();
-
   doneProcessors = 0;
   totalProcessors = 0;
 
-  constructor({ processor }: { processor: (request: MainIn) => Promise<MainOut> }) {
+  constructor(
+    private readonly processor: (request: MainIn) => Promise<MainOut>,
+    private readonly opts: Required<ExecuteOptions>,
+  ) {
     this.processor = processor;
+    this.opts = opts;
+  }
+
+  reset() {
+    this.internalRegistry = new Map();
+    this.queuedExecute = null;
+    this.concurrentExecs = [];
+    this.queuedOperations = new Set();
+    this.awaitingProcessors = new Set();
+    this.doneProcessors = 0;
+    this.totalProcessors = 0;
   }
 
   async run(requests: MainIn[]): Promise<Map<MainIn, MainOut>> {
-    console.log('executing plan:', requests);
-
-    this.totalProcessors = requests.length;
+    // console.log('executing plan:', requests);
+    const resultByRequest = new Map<MainIn, MainOut>();
 
     const results = await EXECUTION.run(this as any /* TODO FIX */, async () => {
-      const executions = requests.map(async (request, index) => {
-        const result = await PROCESSOR_ID.run(index, () => this.processor(request));
-        console.log('yield from processor execution for request input', request);
-
-        this.doneProcessors += 1;
-        if (this.awaitingProcessors.size + this.doneProcessors === this.totalProcessors) {
-          this.executeCheckpoint();
+      for (const requestsBatch of chunk(requests, this.opts.concurrency)) {
+        const batchResults = await Promise.all(this.runBatch(requestsBatch));
+        for (let i = 0; i < batchResults.length; i += 1) {
+          resultByRequest.set(requestsBatch[i], batchResults[i]);
         }
-
-        return result;
-      });
-
-      return Promise.all(executions);
+      }
     });
 
-    const resultsByKey = new Map(
-      results.map((result, index) => [requests[index], result]),
-    );
+    return resultByRequest;
+  }
 
-    return resultsByKey;
+  private runBatch(requestBatch: MainIn[]): Promise<MainOut>[] {
+    this.reset();
+    this.totalProcessors = requestBatch.length;
+
+    return requestBatch.map(async (request, index) => {
+      const result = await PROCESSOR_ID.run(index, () => this.processor(request));
+      // console.log('yield from processor execution for request input', request);
+
+      this.doneProcessors += 1;
+      if (this.awaitingProcessors.size + this.doneProcessors === this.totalProcessors) {
+        this.executeCheckpoint();
+      }
+
+      return result;
+    });
   }
 
   private executeCheckpoint() {
-    console.log('executing checkpoint');
+    // console.log('executing checkpoint');
 
     if (this.queuedExecute) {
-      const plan = new BalarExecution({
-        processor: this.queuedExecute,
-      });
+      const plan = new BalarExecution(this.queuedExecute, this.opts);
 
       const allRequests = this.concurrentExecs.flatMap((item) => item.key);
       plan
@@ -107,7 +132,7 @@ export class BalarExecution<MainIn, MainOut> {
     }
 
     for (const name of this.queuedOperations) {
-      const op = this.internalRegistry[name];
+      const op = this.internalRegistry.get(name)!;
       if (op.executions.length === 0) {
         return;
       }
@@ -130,7 +155,7 @@ export class BalarExecution<MainIn, MainOut> {
       // inputs mapping to the same transformed input.
       const finalInputs = [...new Set(mappedInputs.values())];
 
-      console.log('executing bulk op', name, 'with', finalInputs, ...op.extraArgs);
+      // console.log('executing bulk op', name, 'with', finalInputs, ...op.extraArgs);
 
       op.fn(finalInputs, ...op.extraArgs)
         .then((result) =>
@@ -162,12 +187,12 @@ export class BalarExecution<MainIn, MainOut> {
     const allResults = await new Promise(async (resolve, reject) => {
       this.concurrentExecs.push({ key: requests, resolve, reject });
 
-      console.log(
-        'called nested execute()',
-        this.concurrentExecs.length,
-        '/',
-        this.totalProcessors,
-      );
+      // console.log(
+      //   'called nested execute()',
+      //   this.concurrentExecs.length,
+      //   '/',
+      //   this.totalProcessors,
+      // );
 
       if (this.awaitingProcessors.size + this.doneProcessors === this.totalProcessors) {
         process.nextTick(() => this.executeCheckpoint());
@@ -197,18 +222,18 @@ export class BalarExecution<MainIn, MainOut> {
       throw new Error('balar error: missing processor ID');
     }
 
-    if (!(operationId in this.internalRegistry)) {
-      this.internalRegistry[operationId] = {
+    if (!this.internalRegistry.has(operationId)) {
+      this.internalRegistry.set(operationId, {
         ...config,
         extraArgs: args,
         executions: [],
-      };
+      });
     }
 
     this.awaitingProcessors.add(processorId);
     this.queuedOperations.add(operationId);
 
-    const registryEntry = this.internalRegistry[operationId];
+    const registryEntry = this.internalRegistry.get(operationId)!;
 
     return new Promise((resolve, reject) => {
       registryEntry.executions.push({
@@ -260,7 +285,7 @@ export function scalarize<R extends Record<string, CheckedRegistryEntry<any, any
       const argsId = bulkOpRegistry[entryName].getArgsId(extraArgs);
       const uniqueOperationId = `${uniquePrefix}-${entryName}${argsId}`;
 
-      console.log('executing user scalar fn', uniqueOperationId, 'with', input);
+      // console.log('executing user scalar fn', uniqueOperationId, 'with', input);
 
       return bulkContext.callScalarHandler(
         uniqueOperationId,
@@ -279,16 +304,22 @@ export function scalarize<R extends Record<string, CheckedRegistryEntry<any, any
 export async function execute<In, Out>(
   requests: In[],
   processor: (request: In) => Promise<Out>,
+  opts: ExecuteOptions = {},
 ): Promise<Map<In, Out>> {
   const execution = EXECUTION.getStore();
 
   if (!execution) {
-    const execution = new BalarExecution({
-      processor,
-    });
-
-    return execution.run(requests);
+    return new BalarExecution(processor, {
+      concurrency: DEFAULT_MAX_CONCURRENT_EXECUTIONS,
+      ...opts,
+    }).run(requests);
   }
 
   return execution.nestedContextExecute(requests, processor);
 }
+
+export default {
+  execute,
+  scalarize,
+  def,
+};
