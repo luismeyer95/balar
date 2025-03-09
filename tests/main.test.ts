@@ -12,6 +12,7 @@ describe('tests', () => {
   const accountsRepo = new AccountsRepository();
   const budgetsRepo = new BudgetsRepository();
 
+  const spyInspect = jest.fn(async () => new Map());
   const spyGetCurrentBudgets = jest.fn(budgetsRepo.getCurrentBudgets.bind(budgetsRepo));
   const spyGetBudgetSpends = jest.fn(budgetsRepo.getBudgetSpends.bind(budgetsRepo));
   const spyUpdateBudgets = jest.fn(budgetsRepo.updateBudgets.bind(budgetsRepo));
@@ -37,28 +38,14 @@ describe('tests', () => {
       updateBudget: scalar(spyUpdateBudgets as typeof budgetsRepo.updateBudgets),
       updateBudgets: bulk(spyUpdateBudgets as typeof budgetsRepo.updateBudgets),
 
-      getBudgetSpends: scalar(spyGetBudgetSpends as typeof budgetsRepo.getBudgetSpends),
+      getBudgetSpend: scalar(spyGetBudgetSpends as typeof budgetsRepo.getBudgetSpends),
+      getBudgetSpends: bulk(spyGetBudgetSpends as typeof budgetsRepo.getBudgetSpends),
+
       linkAccountToBudgets: scalar({
         fn: spyLinkBudgetsToAccount as typeof accountsRepo.linkAccountToBudgets,
-        transformInputs: (reqs) => {
-          type Req = (typeof reqs)[0];
-          const requestMapping: Map<Req, Req> = new Map();
-          const newRequestByAccount: Map<number, Req> = new Map();
-
-          for (const req of reqs) {
-            const newRequest = newRequestByAccount.get(req.accountId) ?? {
-              accountId: req.accountId,
-              budgetIds: [],
-            };
-            newRequestByAccount.set(req.accountId, newRequest);
-
-            newRequest.budgetIds.push(...req.budgetIds);
-            requestMapping.set(req, newRequest);
-          }
-
-          return requestMapping;
-        },
       }),
+
+      inspect: scalar(spyInspect as (...args: any[]) => Promise<Map<any, void>>),
     });
   }
 
@@ -94,6 +81,126 @@ describe('tests', () => {
 
     registry = createDefaultRegistry();
     await setupAccountsAndBudgets();
+  });
+
+  describe('facade', () => {
+    describe('object - scalar', () => {
+      // Different ways to produce the same scalar facade type
+      const scalarTestCases = [
+        {
+          test: 'default object facade (scalar)',
+          registry: balar.object(budgetsRepo),
+        },
+        {
+          test: 'explicit scalar facade',
+          registry: balar.object(budgetsRepo, {
+            api: ApiType.Scalar,
+          }),
+        },
+        {
+          test: 'pick facade',
+          picks: ['getCurrentBudgets', 'getBudgetSpends'],
+          registry: balar.object(budgetsRepo, {
+            pick: ['getCurrentBudgets', 'getBudgetSpends'],
+          }),
+        },
+        {
+          test: 'exclude facade',
+          excludes: ['updateBudgets'],
+          registry: balar.object(budgetsRepo, {
+            exclude: ['updateBudgets'],
+          }),
+        },
+      ];
+
+      test.each(scalarTestCases)('$test', async ({ registry, picks, excludes }) => {
+        budgetsRepo.spendOnBudget(1, 200);
+        budgetsRepo.spendOnBudget(2, 450);
+
+        // Act
+        const result = await balar.execute(
+          [1, 2],
+          async function getRemainingAmount(budgetId: number): Promise<number> {
+            const currentBudget = await registry.getCurrentBudgets(budgetId);
+            const budgetSpent = await registry.getBudgetSpends(budgetId);
+
+            return currentBudget.amount - (budgetSpent || 0);
+          },
+        );
+
+        // Assert
+        const effectiveApi = (picks ?? Object.keys(registry)).filter(
+          (key) => !(excludes ?? []).includes(key),
+        );
+        expect(Object.keys(registry)).toEqual(effectiveApi);
+        expect(result).toEqual(
+          new Map([
+            [1, 300],
+            [2, 550],
+          ]),
+        );
+      });
+    });
+
+    describe('object - bulk', () => {
+      // Different ways to produce the same bulk facade type
+      const bulkTestCases = [
+        {
+          test: 'explicit bulk facade',
+          registry: balar.object(budgetsRepo, {
+            api: ApiType.Bulk,
+          }),
+        },
+        {
+          test: 'pick facade',
+          picks: ['getCurrentBudgets', 'getBudgetSpends'],
+          registry: balar.object(budgetsRepo, {
+            api: ApiType.Bulk,
+            pick: ['getCurrentBudgets', 'getBudgetSpends'],
+          }),
+        },
+        {
+          test: 'exclude facade',
+          excludes: ['updateBudgets'],
+          registry: balar.object(budgetsRepo, {
+            api: ApiType.Bulk,
+            exclude: ['updateBudgets'],
+          }),
+        },
+      ];
+
+      test.each(bulkTestCases)('$test', async ({ registry, picks, excludes }) => {
+        budgetsRepo.spendOnBudget(1, 200);
+        budgetsRepo.spendOnBudget(2, 450);
+
+        // Act
+        const result = await balar.execute(
+          [1, 2],
+          async function getRemainingAmount(budgetId: number): Promise<number> {
+            const currentBudget = (await registry.getCurrentBudgets([budgetId])).get(
+              budgetId,
+            )!;
+            const budgetSpent = (await registry.getBudgetSpends([budgetId])).get(
+              budgetId,
+            )!;
+
+            return currentBudget.amount - (budgetSpent || 0);
+          },
+        );
+
+        // Assert
+        const effectiveApi = (picks ?? Object.keys(registry)).filter(
+          (key) => !(excludes ?? []).includes(key),
+        );
+        expect(Object.keys(registry)).toEqual(effectiveApi);
+        expect(result).toEqual(
+          new Map([
+            [1, 300],
+            [2, 550],
+          ]),
+        );
+      });
+    });
   });
 
   describe('basic tests', () => {
@@ -292,6 +399,51 @@ describe('tests', () => {
     });
   });
 
+  describe('bulk api', () => {
+    test('results of processor bulk calls should only include their own data', async () => {
+      // Arrange
+      budgetsRepo.spendOnBudget(1, 100);
+      budgetsRepo.spendOnBudget(1, 100);
+      budgetsRepo.spendOnBudget(2, 1);
+      budgetsRepo.spendOnBudget(5, 4);
+      budgetsRepo.spendOnBudget(5, 6);
+
+      // Act/Assert
+      const result = await balar.execute(
+        [accountId1, accountId2],
+        async function getSpendOfAccount(accountId) {
+          const account = await registry.getAccountsById(accountId);
+          if (!account?.budgetIds) {
+            return null;
+          }
+
+          const spends = await registry.getBudgetSpends(account.budgetIds);
+          await registry.inspect([...spends.values()]);
+
+          return [...spends.values()].reduce((acc, spend) => acc + (spend || 0), 0);
+        },
+      );
+
+      expect(spyGetAccountsById).toHaveBeenCalledTimes(1);
+      expect(spyGetAccountsById).toHaveBeenCalledWith([accountId1, accountId2]);
+
+      expect(spyGetBudgetSpends).toHaveBeenCalledTimes(1);
+      expect(spyGetBudgetSpends).toHaveBeenCalledWith([1, 2, 3, 4, 5, 6]);
+
+      expect(spyInspect).toHaveBeenCalledTimes(1);
+      expect(spyInspect).toHaveBeenCalledWith([
+        [200, 1, undefined, undefined],
+        [10, undefined],
+      ]);
+
+      const expected = new Map([
+        [accountId1, 201],
+        [accountId2, 10],
+      ]);
+      expect(result).toEqual(expected);
+    });
+  });
+
   describe('concurrent checkpoints', () => {
     test('simple concurrent checkpoints with Promise.all()', async () => {
       // Arrange
@@ -308,7 +460,7 @@ describe('tests', () => {
 
           const [currentBudget, budgetSpend] = await Promise.all([
             registry.getCurrentBudget(budgetId),
-            registry.getBudgetSpends(budgetId),
+            registry.getBudgetSpend(budgetId),
           ]);
 
           if (budgetSpend > currentBudget.amount) {
@@ -380,7 +532,7 @@ describe('tests', () => {
 
           const [currentBudget, budgetSpend] = await Promise.all([
             registry.getCurrentBudget(budgetId),
-            registry.getBudgetSpends(budgetId),
+            registry.getBudgetSpend(budgetId),
           ]);
 
           return currentBudget.amount - (budgetSpend || 0);
@@ -444,7 +596,7 @@ describe('tests', () => {
   });
 
   describe('input/output mapping', () => {
-    test('should deduplicate equal inputs to bulk fn and share the result across processors', async () => {
+    test('should not deduplicate equal inputs to bulk fn (not in scope)', async () => {
       // Act
       const requestIds = [1, 2, 3]; // all budgets are under the same account
       const issues = await balar.execute(
@@ -466,42 +618,8 @@ describe('tests', () => {
 
       expect(spyGetCurrentBudgets).toHaveBeenCalledTimes(1);
       expect(spyGetCurrentBudgets).toHaveBeenCalledWith(requestIds);
-      expect(spyGetAccountsById).toHaveBeenCalledWith([1]);
+      expect(spyGetAccountsById).toHaveBeenCalledWith([1, 1, 1]);
       expect(spyGetAccountsById).toHaveBeenCalledTimes(1);
-    });
-
-    test('should invoke custom input transform strategy (merge)', async () => {
-      // Act
-      const requestIds = [1, 2, 3]; // all budgets are under the same account
-      const issues = await balar.execute(
-        requestIds,
-        async function linkAccountToBudget(budgetId: number): Promise<boolean> {
-          const budget = await registry.getCurrentBudget(budgetId);
-
-          const result = await registry.linkAccountToBudgets({
-            accountId: budget.accountId,
-            budgetIds: [budgetId],
-          });
-
-          return result;
-        },
-      );
-
-      // Assert
-      const expected = new Map([
-        [1, true],
-        [2, true],
-        [3, true],
-      ]);
-      expect(issues).toEqual(expected);
-
-      expect(spyGetCurrentBudgets).toHaveBeenCalledTimes(1);
-      expect(spyGetCurrentBudgets).toHaveBeenCalledWith(requestIds);
-
-      expect(spyLinkBudgetsToAccount).toHaveBeenCalledTimes(1);
-      expect(spyLinkBudgetsToAccount).toHaveBeenCalledWith([
-        { accountId: 1, budgetIds: [1, 2, 3] },
-      ]);
     });
   });
 
@@ -718,7 +836,7 @@ describe('tests', () => {
           }
 
           const spends = await balar.execute(account.budgetIds, (budgetId) =>
-            registry.getBudgetSpends(budgetId),
+            registry.getBudgetSpend(budgetId),
           );
 
           return [...spends.values()].reduce((acc, spend) => acc + (spend || 0), 0);
@@ -775,7 +893,7 @@ describe('tests', () => {
       // Assert
       expect(noop2).toHaveBeenCalledTimes(3);
       expect(noop2).toHaveBeenNthCalledWith(1, [11, 21, 31, 41]);
-      expect(noop2).toHaveBeenNthCalledWith(2, [12, 22, 32, 42, 52]); // deduplication!
+      expect(noop2).toHaveBeenNthCalledWith(2, [12, 22, 22, 32, 32, 42, 42, 52]);
       expect(noop2).toHaveBeenNthCalledWith(3, [10, 15, 30]);
       expect(result).toEqual(
         new Map<number, (number[] | -1)[]>([
@@ -810,7 +928,7 @@ describe('tests', () => {
 
           // Run nested execute() context
           const spends = await balar.execute(account.budgetIds, (budgetId) =>
-            registry.getBudgetSpends(budgetId),
+            registry.getBudgetSpend(budgetId),
           );
 
           let maxSpendingBudgetId = 0;
@@ -934,134 +1052,5 @@ describe('tests', () => {
       expect(spyBulkAdd3).toHaveBeenCalledTimes(1);
       expect(spyBulkAdd3).toHaveBeenCalledWith([1, 2, 3], 3, 2);
     });
-  });
-
-  describe('facade', () => {
-    describe('object - scalar', () => {
-      // Different ways to produce the same scalar facade type
-      const scalarTestCases = [
-        {
-          test: 'default object facade (scalar)',
-          registry: balar.object(budgetsRepo),
-        },
-        {
-          test: 'explicit scalar facade',
-          registry: balar.object(budgetsRepo, {
-            api: ApiType.Scalar,
-          }),
-        },
-        {
-          test: 'pick facade',
-          picks: ['getCurrentBudgets', 'getBudgetSpends'],
-          registry: balar.object(budgetsRepo, {
-            pick: ['getCurrentBudgets', 'getBudgetSpends'],
-          }),
-        },
-        {
-          test: 'exclude facade',
-          excludes: ['updateBudgets'],
-          registry: balar.object(budgetsRepo, {
-            exclude: ['updateBudgets'],
-          }),
-        },
-      ];
-
-      test.each(scalarTestCases)('$test', async ({ registry, picks, excludes }) => {
-        budgetsRepo.spendOnBudget(1, 200);
-        budgetsRepo.spendOnBudget(2, 450);
-
-        // Act
-        const result = await balar.execute(
-          [1, 2],
-          async function getRemainingAmount(budgetId: number): Promise<number> {
-            const currentBudget = await registry.getCurrentBudgets(budgetId);
-            const budgetSpent = await registry.getBudgetSpends(budgetId);
-
-            return currentBudget.amount - (budgetSpent || 0);
-          },
-        );
-
-        // Assert
-        const effectiveApi = (picks ?? Object.keys(registry)).filter(
-          (key) => !(excludes ?? []).includes(key),
-        );
-        expect(Object.keys(registry)).toEqual(effectiveApi);
-        expect(result).toEqual(
-          new Map([
-            [1, 300],
-            [2, 550],
-          ]),
-        );
-      });
-    });
-
-    describe('object - bulk', () => {
-      // Different ways to produce the same bulk facade type
-      const bulkTestCases = [
-        {
-          test: 'explicit bulk facade',
-          registry: balar.object(budgetsRepo, {
-            api: ApiType.Bulk,
-          }),
-        },
-        {
-          test: 'pick facade',
-          picks: ['getCurrentBudgets', 'getBudgetSpends'],
-          registry: balar.object(budgetsRepo, {
-            api: ApiType.Bulk,
-            pick: ['getCurrentBudgets', 'getBudgetSpends'],
-          }),
-        },
-        {
-          test: 'exclude facade',
-          excludes: ['updateBudgets'],
-          registry: balar.object(budgetsRepo, {
-            api: ApiType.Bulk,
-            exclude: ['updateBudgets'],
-          }),
-        },
-      ];
-
-      test.each(bulkTestCases)('$test', async ({ registry, picks, excludes }) => {
-        budgetsRepo.spendOnBudget(1, 200);
-        budgetsRepo.spendOnBudget(2, 450);
-
-        // Act
-        const result = await balar.execute(
-          [1, 2],
-          async function getRemainingAmount(budgetId: number): Promise<number> {
-            const currentBudget = (await registry.getCurrentBudgets([budgetId])).get(
-              budgetId,
-            )!;
-            const budgetSpent = (await registry.getBudgetSpends([budgetId])).get(
-              budgetId,
-            )!;
-
-            return currentBudget.amount - (budgetSpent || 0);
-          },
-        );
-
-        // Assert
-        const effectiveApi = (picks ?? Object.keys(registry)).filter(
-          (key) => !(excludes ?? []).includes(key),
-        );
-        expect(Object.keys(registry)).toEqual(effectiveApi);
-        expect(result).toEqual(
-          new Map([
-            [1, 300],
-            [2, 550],
-          ]),
-        );
-      });
-    });
-
-    // test('mixing function and object facades', () => {
-    //   const facade = {
-    //     ...balar.object(budgetsRepo, {
-    //       api: ApiType.Bulk,
-    //     }),
-    //     noop: scalar(async (arr: number[]) => new Map(arr.map((id) => [id, id]))),
-    //   };
-    // });
   });
 });

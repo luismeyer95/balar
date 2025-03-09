@@ -101,10 +101,6 @@ export function scalar<I, O, Args extends readonly unknown[]>(
     return JSON.stringify(args);
   };
 
-  registryEntry.transformInputs ??= (inputs: I[]): Map<I, I> => {
-    return new Map(inputs.map((input) => [input, input]));
-  };
-
   return { ...registryEntry, __brand: ApiType.Scalar } as ScalarRegistryEntry<I, O, Args>;
 }
 
@@ -116,8 +112,8 @@ export function bulk<I, O, Args extends readonly unknown[]>(
 
 function generateUserExposedScalarFn(
   entryName: string,
-  entry: ScalarRegistryEntry<unknown, unknown, unknown[]>,
-) {
+  entry: CheckedRegistryEntry<unknown, unknown, unknown[]>,
+): ScalarFn<unknown, unknown, unknown[]> {
   const uniquePrefix = crypto.randomBytes(8).toString('hex').substring(0, 8);
 
   return async (input: unknown, ...extraArgs: unknown[]): Promise<unknown> => {
@@ -132,17 +128,27 @@ function generateUserExposedScalarFn(
 
     // console.log('executing user scalar fn', uniqueOperationId, 'with', input);
 
-    return bulkContext.callScalarHandler(uniqueOperationId, entry, input, extraArgs);
+    const result = await bulkContext.callBulkHandler(
+      uniqueOperationId,
+      entry,
+      [input],
+      extraArgs,
+    );
+
+    return result!.get(input);
   };
 }
 
 function generateUserExposedBulkFn(
   entryName: string,
   entry: BulkRegistryEntry<unknown, unknown, unknown[]>,
-) {
+): BulkFn<unknown, unknown, unknown[]> {
   const uniquePrefix = crypto.randomBytes(8).toString('hex').substring(0, 8);
 
-  return async (inputs: unknown[], ...extraArgs: unknown[]): Promise<unknown> => {
+  return async (
+    inputs: unknown[],
+    ...extraArgs: unknown[]
+  ): Promise<Map<unknown, unknown>> => {
     const bulkContext = EXECUTION.getStore();
 
     if (!bulkContext) {
@@ -154,6 +160,18 @@ function generateUserExposedBulkFn(
 
     // console.log('executing user scalar fn', uniqueOperationId, 'with', input);
 
-    return bulkContext.callBulkHandler(uniqueOperationId, entry, inputs, extraArgs);
+    const allResults = await bulkContext.callBulkHandler(
+      uniqueOperationId,
+      entry,
+      inputs,
+      extraArgs,
+    );
+
+    const result = new Map();
+    for (const input of inputs) {
+      result.set(input, allResults!.get(input));
+    }
+
+    return result;
   };
 }

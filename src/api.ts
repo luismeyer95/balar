@@ -1,12 +1,13 @@
 import { ApiType } from './config';
 import { UnionPickAndExclude, ValueTypes } from './utils';
 
+export type ProcessorFn<In, Out> = (request: In) => Promise<Out>;
+
 export type BulkFn<In, Out, Args extends readonly unknown[]> = (
   request: In[],
   ...args: Args
 ) => Promise<Map<In, Out>>;
-export type ProcessorFn<In, Out> = (request: In) => Promise<Out>;
-export type TransformInputsFn<In> = (_: NoInfer<In>[]) => Map<NoInfer<In>, NoInfer<In>>;
+
 export type ScalarFn<In, Out, Args extends readonly unknown[]> = (
   request: In,
   ...args: Args
@@ -14,7 +15,6 @@ export type ScalarFn<In, Out, Args extends readonly unknown[]> = (
 
 export type RegistryEntry<In, Out, Args extends readonly unknown[]> = {
   fn: BulkFn<In, Out, Args>;
-  transformInputs?: TransformInputsFn<In>;
   getArgsId?: (extraArgs: Args) => string;
 };
 
@@ -30,40 +30,17 @@ export type CheckedRegistryEntry<I, O, Args extends readonly unknown[]> =
   | ScalarRegistryEntry<I, O, Args>
   | BulkRegistryEntry<I, O, Args>;
 
-export type ScalarOperation<In, Out, Args extends readonly unknown[]> = {
-  fn: BulkFn<In, Out, Args>;
-  transformInputs: TransformInputsFn<In>;
-  extraArgs: Args;
-  calls: Invocation<In, Out>[];
-};
-
-export type BulkInvocation<In, Out> = Invocation<In[][], Map<In, Out>> & {
-  cachedPromise?: Promise<Map<In, Out>>;
-};
-
 export type BulkOperation<In, Out, Args extends readonly unknown[]> = {
   fn: BulkFn<In, Out, Args>;
-  transformInputs: TransformInputsFn<In>;
   extraArgs: Args;
   call: BulkInvocation<In, Out> | null;
 };
 
-export type Operation<In, Out, Args extends readonly unknown[]> =
-  | ScalarOperation<In, Out, Args>
-  | BulkOperation<In, Out, Args>;
-
-export type Invocation<In, Out> = {
-  input: In;
-  resolve: (ret: Out) => void;
+export type BulkInvocation<In, Out> = {
+  input: In[];
+  resolve: (ret: Map<In, Out>) => void;
   reject: (err: Error) => void;
-};
-
-export type InternalRegistry<T extends Record<string, RegistryEntry<any, any, any>>> = {
-  [K in keyof T]: T[K] extends {
-    fn: (inputs: Array<infer I>, ...args: infer Args) => Promise<Map<infer I, infer O>>;
-  }
-    ? ScalarOperation<I, O, Args>
-    : never;
+  cachedPromise: Promise<Map<In, Out>> | null;
 };
 
 export type ExecuteOptions = {
