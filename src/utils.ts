@@ -40,6 +40,10 @@ export type ZipToRecord<
   V extends readonly any[],
 > = EntriesToRecord<ZipToEntries<K, V>>;
 
+export type UnionPickAndExclude<T, P extends T, E extends T> = Extract<Exclude<T, E>, P>;
+
+export type ValueTypes<T> = T extends { [key: string]: infer V } ? V : never;
+
 export function* chunk<T>(iterable: Iterable<T>, size: number): Iterable<T[]> {
   let chunk: T[] = [];
   let i = 0;
@@ -57,4 +61,25 @@ export function* chunk<T>(iterable: Iterable<T>, size: number): Iterable<T[]> {
   if (i > 0) {
     yield chunk.filter((item) => item !== undefined);
   }
+}
+
+export function getMethodsOfClassObject(classObject: object, depth = Infinity): string[] {
+  let obj = classObject as object;
+  const methods = new Set<string>();
+
+  while (depth-- && obj) {
+    for (const key of Object.getOwnPropertyNames(obj)) {
+      if (typeof (obj as any)[key] !== 'function') {
+        continue;
+      }
+      methods.add(key);
+    }
+    obj = Object.getPrototypeOf(obj)!;
+    if (obj === Object.prototype) {
+      break;
+    }
+  }
+
+  methods.delete('constructor');
+  return [...methods];
 }

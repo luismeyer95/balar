@@ -1,63 +1,23 @@
-import { AsyncLocalStorage } from 'async_hooks';
-import crypto from 'node:crypto';
 import {
-  CheckedRegistryEntry,
-  RegistryEntry,
-  BulkFn,
+  ScalarRegistryEntry,
   ProcessorFn,
-  Execution,
-  ScalarizeRegistry,
-  InternalRegistryEntry,
+  ScalarOperation,
   ExecuteOptions,
+  BulkRegistryEntry,
+  Operation,
+  BulkOperation,
+  Invocation,
+  BulkInvocation,
 } from './api';
-import { DEFAULT_MAX_CONCURRENT_EXECUTIONS } from './constants';
+import { DEFAULT_MAX_CONCURRENT_EXECUTIONS, EXECUTION, PROCESSOR_ID } from './constants';
 import { chunk } from './utils';
-
-export class BulkRegistry<R extends Record<string, CheckedRegistryEntry<any, any, any>>> {
-  constructor(public readonly entries: R) {}
-}
-
-/**
- * Due to some TypeScript limitations, it is only possible to ensure
- * correct type-checking at the registry entry level if each entry
- * configuration is wrapped in a function like this one.
- *
- * As an added layer of type-safety, the registry's API is made to only
- * accept registry entries that have been wrapped in a call to `define()`.
- */
-export function def<I, O, Args extends readonly unknown[]>(
-  entry: RegistryEntry<I, O, Args> | BulkFn<I, O, Args>,
-): CheckedRegistryEntry<I, O, Args> {
-  const registryEntry = 'fn' in entry ? entry : { fn: entry };
-
-  registryEntry.getArgsId ??= (args) => {
-    if (!args.length) {
-      // Optimization for no additionnal args
-      return '';
-    }
-    // Note: may produce different IDs on objects with different key order
-    return JSON.stringify(args);
-  };
-
-  registryEntry.transformInputs ??= (inputs: I[]): Map<I, I> => {
-    return new Map(inputs.map((input) => [input, input]));
-  };
-
-  return registryEntry as CheckedRegistryEntry<I, O, Args>;
-}
-
-// export function bulk<I, O, Args extends readonly unknown[]>(
-//   entry: RegistryEntry<I, O, Args> | BulkFn<I, O, Args>,
-// ): CheckedBulkRegistryEntry<I, O, Args> {
-//   return def(entry) as CheckedBulkRegistryEntry<I, O, Args>;
-// }
+import { bulk, scalar, object, facade } from './config';
 
 export class BalarExecution<MainIn, MainOut> {
-  internalRegistry: Map<string, InternalRegistryEntry<unknown, unknown, unknown[]>> =
-    new Map();
+  internalRegistry: Map<string, Operation<unknown, unknown, unknown[]>> = new Map();
 
   queuedExecute: ProcessorFn<unknown, unknown> | null = null;
-  concurrentExecs: Execution<unknown, unknown>[] = [];
+  concurrentExecs: Invocation<unknown, unknown>[] = [];
 
   queuedOperations: Set<string> = new Set();
   awaitingProcessors: Set<number> = new Set();
@@ -86,7 +46,7 @@ export class BalarExecution<MainIn, MainOut> {
     // console.log('executing plan:', requests);
     const resultByRequest = new Map<MainIn, MainOut>();
 
-    const results = await EXECUTION.run(this as any /* TODO FIX */, async () => {
+    await EXECUTION.run(this as any /* TODO FIX */, async () => {
       for (const requestsBatch of chunk(requests, this.opts.concurrency)) {
         const batchResults = await Promise.all(this.runBatch(requestsBatch));
         for (let i = 0; i < batchResults.length; i += 1) {
@@ -121,48 +81,26 @@ export class BalarExecution<MainIn, MainOut> {
     if (this.queuedExecute) {
       const plan = new BalarExecution(this.queuedExecute, this.opts);
 
-      const allRequests = this.concurrentExecs.flatMap((item) => item.key);
+      const allRequests = this.concurrentExecs.flatMap((item) => item.input);
       plan
         .run(allRequests)
-        .then((allResults) =>
-          this.concurrentExecs.forEach((exec) => exec.resolve(allResults)),
-        )
+        .then((allResults) => {
+          for (const exec of this.concurrentExecs) {
+            exec.resolve(allResults);
+          }
+        })
         .catch((err) => this.concurrentExecs.forEach((exec) => exec.reject(err)))
         .finally(() => (this.concurrentExecs = []));
     }
 
     for (const name of this.queuedOperations) {
       const op = this.internalRegistry.get(name)!;
-      if (op.executions.length === 0) {
-        return;
+
+      if ('call' in op) {
+        this.executeCheckpointBulkOperation(name, op);
+      } else {
+        this.executeCheckpointScalarOperation(name, op);
       }
-
-      // For each queued call, the input is stored as a key in order
-      // to index out the result from the bulk call map. Since these
-      // inputs are transformed right before execution to allow for
-      // input merging, we need to apply an input key remap.
-      const inputs = op.executions.map((item) => item.key);
-      const mappedInputs = op.transformInputs(inputs);
-      for (const execItem of op.executions) {
-        const mappedInput = mappedInputs.get(execItem.key);
-        if (mappedInput) {
-          execItem.key = mappedInput;
-        }
-      }
-
-      // In case the transform deduplicated some inputs, the resulting
-      // map may contain duplicate values due to multiple original
-      // inputs mapping to the same transformed input.
-      const finalInputs = [...new Set(mappedInputs.values())];
-
-      // console.log('executing bulk op', name, 'with', finalInputs, ...op.extraArgs);
-
-      op.fn(finalInputs, ...op.extraArgs)
-        .then((result) =>
-          op.executions.forEach((item) => item.resolve(result.get(item.key))),
-        )
-        .catch((err) => op.executions.forEach((item) => item.reject(err)))
-        .finally(() => (op.executions = []));
     }
 
     // Clear checkpoint buffer
@@ -171,10 +109,77 @@ export class BalarExecution<MainIn, MainOut> {
     this.awaitingProcessors.clear();
   }
 
-  async nestedContextExecute<In, Out>(
-    requests: In[],
-    processor: (request: In) => Promise<Out>,
+  private executeCheckpointScalarOperation(
+    opName: string,
+    scalarOp: ScalarOperation<unknown, unknown, unknown[]>,
   ) {
+    if (scalarOp.calls.length === 0) {
+      return;
+    }
+
+    // For each queued call, the input is stored as a key in order
+    // to index out the result from the bulk call map. Since these
+    // inputs are transformed right before execution to allow for
+    // input merging, we need to apply an input key remap.
+    const inputs = scalarOp.calls.map((item) => item.input);
+    const mappedInputs = scalarOp.transformInputs(inputs);
+    for (const execItem of scalarOp.calls) {
+      const mappedInput = mappedInputs.get(execItem.input);
+      if (mappedInput) {
+        execItem.input = mappedInput;
+      }
+    }
+
+    // In case the transform deduplicated some inputs, the resulting
+    // map may contain duplicate values due to multiple original
+    // inputs mapping to the same transformed input.
+    const finalInputs = [...new Set(mappedInputs.values())];
+
+    // console.log(
+    //   'executing underlying op',
+    //   opName,
+    //   'with',
+    //   finalInputs,
+    //   ...scalarOp.extraArgs,
+    // );
+
+    scalarOp
+      .fn(finalInputs, ...scalarOp.extraArgs)
+      .then((result) => {
+        for (const item of scalarOp.calls) {
+          item.resolve(result.get(item.input));
+        }
+      })
+      .catch((err) => scalarOp.calls.forEach((item) => item.reject(err)))
+      .finally(() => (scalarOp.calls = []));
+  }
+
+  private executeCheckpointBulkOperation(
+    opName: string,
+    bulkOp: BulkOperation<unknown, unknown, unknown[]>,
+  ) {
+    const call = bulkOp.call;
+    if (!call) {
+      return;
+    }
+
+    const finalInputs = call.input.flat();
+    // console.log(
+    //   'executing underlying op',
+    //   opName,
+    //   'with',
+    //   finalInputs,
+    //   ...bulkOp.extraArgs,
+    // );
+
+    bulkOp
+      .fn(finalInputs, ...bulkOp.extraArgs)
+      .then(call.resolve)
+      .catch(call.reject)
+      .finally(() => (bulkOp.call = null));
+  }
+
+  async runNested<In, Out>(requests: In[], processor: (request: In) => Promise<Out>) {
     const processorId = PROCESSOR_ID.getStore();
     if (processorId == null) {
       throw new Error('balar error: missing processor ID');
@@ -185,7 +190,7 @@ export class BalarExecution<MainIn, MainOut> {
     this.awaitingProcessors.add(processorId);
 
     const allResults = await new Promise(async (resolve, reject) => {
-      this.concurrentExecs.push({ key: requests, resolve, reject });
+      this.concurrentExecs.push({ input: requests, resolve, reject });
 
       // console.log(
       //   'called nested execute()',
@@ -213,7 +218,7 @@ export class BalarExecution<MainIn, MainOut> {
 
   callScalarHandler(
     operationId: string,
-    config: CheckedRegistryEntry<unknown, unknown, unknown[]>,
+    config: ScalarRegistryEntry<unknown, unknown, unknown[]>,
     input: unknown,
     args: unknown[],
   ) {
@@ -226,18 +231,19 @@ export class BalarExecution<MainIn, MainOut> {
       this.internalRegistry.set(operationId, {
         ...config,
         extraArgs: args,
-        executions: [],
+        calls: [],
       });
     }
 
     this.awaitingProcessors.add(processorId);
     this.queuedOperations.add(operationId);
 
-    const registryEntry = this.internalRegistry.get(operationId)!;
+    type ScalarOp = ScalarOperation<unknown, unknown, unknown[]>;
+    const registryEntry = this.internalRegistry.get(operationId) as ScalarOp;
 
     return new Promise((resolve, reject) => {
-      registryEntry.executions.push({
-        key: input,
+      registryEntry.calls.push({
+        input: input,
         resolve,
         reject,
       });
@@ -251,55 +257,56 @@ export class BalarExecution<MainIn, MainOut> {
       }
     });
   }
+
+  callBulkHandler(
+    operationId: string,
+    config: BulkRegistryEntry<unknown, unknown, unknown[]>,
+    inputs: unknown[],
+    extraArgs: unknown[],
+  ) {
+    const processorId = PROCESSOR_ID.getStore();
+    if (processorId == null) {
+      throw new Error('balar error: missing processor ID');
+    }
+
+    type BulkOp = BulkOperation<unknown, unknown, unknown[]>;
+
+    if (!this.internalRegistry.has(operationId)) {
+      let call: BulkInvocation<unknown, unknown> | null = null;
+      const promise = new Promise<Map<unknown, unknown>>((resolve, reject) => {
+        call = {
+          input: [],
+          resolve,
+          reject,
+        };
+      });
+      // Promise constructor executes synchronously
+      call!.cachedPromise = promise;
+
+      const registryEntry: BulkOp = {
+        ...config,
+        extraArgs,
+        call,
+      };
+
+      this.internalRegistry.set(operationId, registryEntry);
+    }
+
+    const registryEntry = this.internalRegistry.get(operationId)! as BulkOp;
+    registryEntry.call!.input.push(inputs);
+
+    this.awaitingProcessors.add(processorId);
+    this.queuedOperations.add(operationId);
+
+    if (this.awaitingProcessors.size + this.doneProcessors === this.totalProcessors) {
+      process.nextTick(() => this.executeCheckpoint());
+    }
+
+    return registryEntry.call!.cachedPromise;
+  }
 }
 
 ////////////////////////////////////////
-
-const EXECUTION = new AsyncLocalStorage<BalarExecution<unknown, unknown>>();
-const PROCESSOR_ID = new AsyncLocalStorage<number>();
-
-export function scalarize<R extends Record<string, CheckedRegistryEntry<any, any, any>>>(
-  bulkOpRegistry: R,
-): ScalarizeRegistry<R> {
-  // Creates scalar handlers from bulk functions.
-  // Those are the user-exposed scalar functions which are not aware
-  // of any execution context. They delegate execution to the context-aware
-  // scalar handlers taken from the bulk plan stored in async context.
-  const scalarHandlers = {} as ScalarizeRegistry<R>;
-
-  for (const entryName of Object.keys(bulkOpRegistry)) {
-    const uniquePrefix = crypto.randomBytes(8).toString('hex').substring(0, 8);
-
-    const scalarFn = async (
-      input: unknown,
-      ...extraArgs: unknown[]
-    ): Promise<unknown> => {
-      const bulkContext = EXECUTION.getStore();
-
-      if (!bulkContext) {
-        throw new Error(
-          'balar error: scalar function called outside of a bulk operation',
-        );
-      }
-
-      const argsId = bulkOpRegistry[entryName].getArgsId(extraArgs);
-      const uniqueOperationId = `${uniquePrefix}-${entryName}${argsId}`;
-
-      // console.log('executing user scalar fn', uniqueOperationId, 'with', input);
-
-      return bulkContext.callScalarHandler(
-        uniqueOperationId,
-        bulkOpRegistry[entryName],
-        input,
-        extraArgs,
-      );
-    };
-
-    scalarHandlers[entryName as keyof R] = scalarFn as ScalarizeRegistry<R>[keyof R];
-  }
-
-  return scalarHandlers;
-}
 
 export async function execute<In, Out>(
   requests: In[],
@@ -315,11 +322,15 @@ export async function execute<In, Out>(
     }).run(requests);
   }
 
-  return execution.nestedContextExecute(requests, processor);
+  return execution.runNested(requests, processor);
 }
 
 export default {
   execute,
-  scalarize,
-  def,
+  scalar,
+  bulk,
+  object,
+  facade,
 };
+
+export { scalar, bulk, object, facade } from './config';

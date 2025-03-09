@@ -1,3 +1,6 @@
+import { ApiType } from './config';
+import { UnionPickAndExclude, ValueTypes } from './utils';
+
 export type BulkFn<In, Out, Args extends readonly unknown[]> = (
   request: In[],
   ...args: Args
@@ -15,23 +18,42 @@ export type RegistryEntry<In, Out, Args extends readonly unknown[]> = {
   getArgsId?: (extraArgs: Args) => string;
 };
 
-export type CheckedRegistryEntry<I, O, Args extends readonly unknown[]> = Required<
+export type ScalarRegistryEntry<I, O, Args extends readonly unknown[]> = Required<
   RegistryEntry<I, O, Args>
-> & { __brand: 'checked' };
+> & { __brand: ApiType.Scalar };
 
-export type CheckedBulkRegistryEntry<I, O, Args extends readonly unknown[]> = Required<
+export type BulkRegistryEntry<I, O, Args extends readonly unknown[]> = Required<
   RegistryEntry<I, O, Args>
-> & { __brand: 'checked' };
+> & { __brand: ApiType.Bulk };
 
-export type InternalRegistryEntry<In, Out, Args extends readonly unknown[]> = {
+export type CheckedRegistryEntry<I, O, Args extends readonly unknown[]> =
+  | ScalarRegistryEntry<I, O, Args>
+  | BulkRegistryEntry<I, O, Args>;
+
+export type ScalarOperation<In, Out, Args extends readonly unknown[]> = {
   fn: BulkFn<In, Out, Args>;
-  extraArgs: Args;
-  executions: Execution<In, Out>[];
   transformInputs: TransformInputsFn<In>;
+  extraArgs: Args;
+  calls: Invocation<In, Out>[];
 };
 
-export type Execution<In, Out> = {
-  key: In;
+export type BulkInvocation<In, Out> = Invocation<In[][], Map<In, Out>> & {
+  cachedPromise?: Promise<Map<In, Out>>;
+};
+
+export type BulkOperation<In, Out, Args extends readonly unknown[]> = {
+  fn: BulkFn<In, Out, Args>;
+  transformInputs: TransformInputsFn<In>;
+  extraArgs: Args;
+  call: BulkInvocation<In, Out> | null;
+};
+
+export type Operation<In, Out, Args extends readonly unknown[]> =
+  | ScalarOperation<In, Out, Args>
+  | BulkOperation<In, Out, Args>;
+
+export type Invocation<In, Out> = {
+  input: In;
   resolve: (ret: Out) => void;
   reject: (err: Error) => void;
 };
@@ -40,7 +62,7 @@ export type InternalRegistry<T extends Record<string, RegistryEntry<any, any, an
   [K in keyof T]: T[K] extends {
     fn: (inputs: Array<infer I>, ...args: infer Args) => Promise<Map<infer I, infer O>>;
   }
-    ? InternalRegistryEntry<I, O, Args>
+    ? ScalarOperation<I, O, Args>
     : never;
 };
 
@@ -58,17 +80,47 @@ type ScalarizeFn<F> = F extends (
   ? (input: I, ...args: Args) => Promise<O>
   : never;
 
+export type BulkMethods<O extends Record<string, any>> = ValueTypes<{
+  [K in keyof O as O[K] extends BulkFn<any, any, any> ? K : never]: K;
+}>;
+
 /**
- * Takes a class containing bulk functions and converts it to a class
- * containing scalar functions.
+ * Takes a class object containing bulk methods and creates a facade only
+ * containing those bulk methods. Exposes pick and exclude method filters.
  */
-export type ScalarizeObject<O> = {
-  [K in keyof O as O[K] extends BulkFn<any, any, any> ? K : never]: ScalarizeFn<O[K]>;
+export type BulkFacade<
+  O extends Record<string, any>,
+  P extends keyof O & string = BulkMethods<O> & string,
+  E extends keyof O & string = never,
+> = {
+  [K in keyof O as O[K] extends BulkFn<any, any, any>
+    ? K extends UnionPickAndExclude<keyof O, P, E>
+      ? K
+      : never
+    : never]: O[K] extends BulkFn<infer I, infer O, infer A> ? BulkFn<I, O, A> : never;
 };
 
 /**
- * Takes a registry and converts it to a record of scalar functions.
+ * Takes a class object containing bulk methods and creates a facade only
+ * containing scalar versions of these bulk methods. Exposes pick and exclude method filters.
  */
-export type ScalarizeRegistry<R extends Record<string, RegistryEntry<any, any, any>>> = {
-  [K in keyof R]: ScalarizeFn<R[K]['fn']>;
+export type ScalarFacade<
+  O extends Record<string, any>,
+  P extends keyof O & string = BulkMethods<O> & string,
+  E extends keyof O & string = never,
+> = {
+  [K in keyof O as O[K] extends BulkFn<any, any, any>
+    ? K extends UnionPickAndExclude<keyof O, P, E>
+      ? K
+      : never
+    : never]: O[K] extends BulkFn<infer I, infer O, infer A> ? ScalarFn<I, O, A> : never;
+};
+
+/**
+ * Takes a registry and converts it to a record of scalar and bulk functions.
+ */
+export type Facade<R extends Record<string, RegistryEntry<any, any, any>>> = {
+  [K in keyof R]: R[K] extends BulkRegistryEntry<any, any, any>
+    ? R[K]['fn']
+    : ScalarizeFn<R[K]['fn']>;
 };

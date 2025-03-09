@@ -1,4 +1,5 @@
-import { def } from '../src/index';
+import { ApiType } from '../src/config';
+import { bulk, scalar } from '../src/index';
 import * as balar from '../src/index';
 import {
   Account,
@@ -22,13 +23,22 @@ describe('tests', () => {
   let registry = createDefaultRegistry();
 
   function createDefaultRegistry() {
-    return balar.scalarize({
+    return balar.facade({
       // Register your bulk API dependencies
-      getAccountsById: def(spyGetAccountsById as typeof accountsRepo.getAccountsById),
-      getCurrentBudget: def(spyGetCurrentBudgets as typeof budgetsRepo.getCurrentBudgets),
-      updateBudget: def(spyUpdateBudgets as typeof budgetsRepo.updateBudgets),
-      getBudgetSpends: def(spyGetBudgetSpends as typeof budgetsRepo.getBudgetSpends),
-      linkAccountToBudgets: def({
+      getAccountsById: scalar(spyGetAccountsById as typeof accountsRepo.getAccountsById),
+
+      getCurrentBudget: scalar(
+        spyGetCurrentBudgets as typeof budgetsRepo.getCurrentBudgets,
+      ),
+      getCurrentBudgets: bulk(
+        spyGetCurrentBudgets as typeof budgetsRepo.getCurrentBudgets,
+      ),
+
+      updateBudget: scalar(spyUpdateBudgets as typeof budgetsRepo.updateBudgets),
+      updateBudgets: bulk(spyUpdateBudgets as typeof budgetsRepo.updateBudgets),
+
+      getBudgetSpends: scalar(spyGetBudgetSpends as typeof budgetsRepo.getBudgetSpends),
+      linkAccountToBudgets: scalar({
         fn: spyLinkBudgetsToAccount as typeof accountsRepo.linkAccountToBudgets,
         transformInputs: (reqs) => {
           type Req = (typeof reqs)[0];
@@ -135,7 +145,7 @@ describe('tests', () => {
       expect(spyGetCurrentBudgets).toHaveBeenCalledTimes(1);
     });
 
-    test('standard bulk workflow with sequential checkpoints', async () => {
+    test('standard bulk workflow with sequential checkpoints (scalar api)', async () => {
       // Arrange
       budgetsRepo.failUpdateForBudget(4);
 
@@ -189,14 +199,77 @@ describe('tests', () => {
       expect(spyUpdateBudgets).toHaveBeenCalledTimes(1);
     });
 
+    test('standard bulk workflow with sequential checkpoints (bulk api)', async () => {
+      // Arrange
+      budgetsRepo.failUpdateForBudget(4);
+
+      // Act
+      const requests = [
+        { id: 1, amount: 1000 }, // success (from 500 to 1000)
+        { id: 2, amount: 0 }, // fail: can't have 0
+        { id: 3, amount: 1 }, // fail: can't lower (from 1500 to 1)
+        { id: 4, amount: 3000 }, // fail (forced failure)
+      ];
+      const issues = await balar.execute(
+        requests,
+        async function updateBudgetWithValidation(request: {
+          id: number;
+          amount: number;
+        }): Promise<Issues | null> {
+          const issues = new Issues();
+          const requestBudget = request.amount;
+
+          if (requestBudget === 0) {
+            issues.errors.push('budget should be greater than 0');
+            return issues;
+          }
+
+          const currentBudget = (await registry.getCurrentBudgets([request.id])).get(
+            request.id,
+          )!;
+
+          if (requestBudget < currentBudget.amount) {
+            issues.errors.push('budget must not be lowered');
+            return issues;
+          }
+
+          const updatedBudget = (await registry.updateBudgets([request])).get(request)!;
+
+          if (!updatedBudget) {
+            issues.errors.push('budget update failed');
+            return issues;
+          }
+
+          return null;
+        },
+      );
+
+      // Assert
+      const expected = new Map([
+        [{ id: 1, amount: 1000 }, null],
+        [{ id: 2, amount: 0 }, new Issues('budget should be greater than 0')],
+        [{ id: 3, amount: 1 }, new Issues('budget must not be lowered')],
+        [{ id: 4, amount: 3000 }, new Issues('budget update failed')],
+      ]);
+      expect(issues).toEqual(expected);
+
+      expect(spyGetCurrentBudgets).toHaveBeenCalledTimes(1);
+      expect(spyGetCurrentBudgets).toHaveBeenCalledWith([1, 3, 4]);
+      expect(spyUpdateBudgets).toHaveBeenCalledTimes(1);
+      expect(spyUpdateBudgets).toHaveBeenCalledWith([
+        { id: 1, amount: 1000 },
+        { id: 4, amount: 3000 },
+      ]);
+    });
+
     test('bulk fn with extended arglist', async () => {
       async function bulkMul(arr: number[], rhs: number) {
         return new Map(arr.map((id) => [id, id * rhs]));
       }
 
       const spyBulkMul = jest.fn(bulkMul);
-      const registry = balar.scalarize({
-        mul: def(spyBulkMul),
+      const registry = balar.facade({
+        mul: scalar(spyBulkMul),
       });
 
       // Act
@@ -336,9 +409,9 @@ describe('tests', () => {
       }
       const noopMock1 = jest.fn(noop);
       const noopMock2 = jest.fn(noop);
-      const registry = balar.scalarize({
-        noop1: def(noopMock1),
-        noop2: def(noopMock2),
+      const registry = balar.facade({
+        noop1: scalar(noopMock1),
+        noop2: scalar(noopMock2),
       });
 
       // Act
@@ -465,8 +538,8 @@ describe('tests', () => {
         );
       });
 
-      const registry = balar.scalarize({
-        mayThrow: def(mayThrow),
+      const registry = balar.facade({
+        mayThrow: scalar(mayThrow),
       });
 
       // Act
@@ -492,9 +565,9 @@ describe('tests', () => {
       const noopEven = jest.fn(noop);
       const noopOdd = jest.fn(noop);
 
-      const registry = balar.scalarize({
-        noopEven: def(noopEven),
-        noopOdd: def(noopOdd),
+      const registry = balar.facade({
+        noopEven: scalar(noopEven),
+        noopOdd: scalar(noopOdd),
       });
 
       // Act
@@ -531,8 +604,8 @@ describe('tests', () => {
 
       const noopMock = jest.fn(noop);
 
-      const registry = balar.scalarize({
-        noop: def(noopMock),
+      const registry = balar.facade({
+        noop: scalar(noopMock),
       });
 
       // Act
@@ -575,9 +648,9 @@ describe('tests', () => {
       const spyLt = jest.fn(lt);
       const spyGt = jest.fn(gt);
 
-      const registry = balar.scalarize({
-        lt: def(spyLt),
-        gt: def(spyGt),
+      const registry = balar.facade({
+        lt: scalar(spyLt),
+        gt: scalar(spyGt),
       });
 
       // Act
@@ -668,9 +741,9 @@ describe('tests', () => {
     test('multiple nesting levels with processing before and after nestings', async () => {
       // Arrange
       const noop2 = jest.fn(async (arr: number[]) => new Map(arr.map((id) => [id, id])));
-      const registry = balar.scalarize({
-        noop1: def(async (arr: number[]) => new Map(arr.map((id) => [id, id]))),
-        noop2: def(noop2),
+      const registry = balar.facade({
+        noop1: scalar(async (arr: number[]) => new Map(arr.map((id) => [id, id]))),
+        noop2: scalar(noop2),
       });
 
       // Act
@@ -784,10 +857,10 @@ describe('tests', () => {
     const spyBulkMulObj = jest.fn(bulkMulObj);
     const spyBulkAdd3 = jest.fn(bulkAdd3);
 
-    const registry = balar.scalarize({
-      mul: def(spyBulkMul),
-      mulObj: def(spyBulkMulObj),
-      add3: def({
+    const registry = balar.facade({
+      mul: scalar(spyBulkMul),
+      mulObj: scalar(spyBulkMulObj),
+      add3: scalar({
         fn: spyBulkAdd3,
         getArgsId: ([two, three]) => (two + three).toString(),
       }),
@@ -861,5 +934,134 @@ describe('tests', () => {
       expect(spyBulkAdd3).toHaveBeenCalledTimes(1);
       expect(spyBulkAdd3).toHaveBeenCalledWith([1, 2, 3], 3, 2);
     });
+  });
+
+  describe('facade', () => {
+    describe('object - scalar', () => {
+      // Different ways to produce the same scalar facade type
+      const scalarTestCases = [
+        {
+          test: 'default object facade (scalar)',
+          registry: balar.object(budgetsRepo),
+        },
+        {
+          test: 'explicit scalar facade',
+          registry: balar.object(budgetsRepo, {
+            api: ApiType.Scalar,
+          }),
+        },
+        {
+          test: 'pick facade',
+          picks: ['getCurrentBudgets', 'getBudgetSpends'],
+          registry: balar.object(budgetsRepo, {
+            pick: ['getCurrentBudgets', 'getBudgetSpends'],
+          }),
+        },
+        {
+          test: 'exclude facade',
+          excludes: ['updateBudgets'],
+          registry: balar.object(budgetsRepo, {
+            exclude: ['updateBudgets'],
+          }),
+        },
+      ];
+
+      test.each(scalarTestCases)('$test', async ({ registry, picks, excludes }) => {
+        budgetsRepo.spendOnBudget(1, 200);
+        budgetsRepo.spendOnBudget(2, 450);
+
+        // Act
+        const result = await balar.execute(
+          [1, 2],
+          async function getRemainingAmount(budgetId: number): Promise<number> {
+            const currentBudget = await registry.getCurrentBudgets(budgetId);
+            const budgetSpent = await registry.getBudgetSpends(budgetId);
+
+            return currentBudget.amount - (budgetSpent || 0);
+          },
+        );
+
+        // Assert
+        const effectiveApi = (picks ?? Object.keys(registry)).filter(
+          (key) => !(excludes ?? []).includes(key),
+        );
+        expect(Object.keys(registry)).toEqual(effectiveApi);
+        expect(result).toEqual(
+          new Map([
+            [1, 300],
+            [2, 550],
+          ]),
+        );
+      });
+    });
+
+    describe('object - bulk', () => {
+      // Different ways to produce the same bulk facade type
+      const bulkTestCases = [
+        {
+          test: 'explicit bulk facade',
+          registry: balar.object(budgetsRepo, {
+            api: ApiType.Bulk,
+          }),
+        },
+        {
+          test: 'pick facade',
+          picks: ['getCurrentBudgets', 'getBudgetSpends'],
+          registry: balar.object(budgetsRepo, {
+            api: ApiType.Bulk,
+            pick: ['getCurrentBudgets', 'getBudgetSpends'],
+          }),
+        },
+        {
+          test: 'exclude facade',
+          excludes: ['updateBudgets'],
+          registry: balar.object(budgetsRepo, {
+            api: ApiType.Bulk,
+            exclude: ['updateBudgets'],
+          }),
+        },
+      ];
+
+      test.each(bulkTestCases)('$test', async ({ registry, picks, excludes }) => {
+        budgetsRepo.spendOnBudget(1, 200);
+        budgetsRepo.spendOnBudget(2, 450);
+
+        // Act
+        const result = await balar.execute(
+          [1, 2],
+          async function getRemainingAmount(budgetId: number): Promise<number> {
+            const currentBudget = (await registry.getCurrentBudgets([budgetId])).get(
+              budgetId,
+            )!;
+            const budgetSpent = (await registry.getBudgetSpends([budgetId])).get(
+              budgetId,
+            )!;
+
+            return currentBudget.amount - (budgetSpent || 0);
+          },
+        );
+
+        // Assert
+        const effectiveApi = (picks ?? Object.keys(registry)).filter(
+          (key) => !(excludes ?? []).includes(key),
+        );
+        expect(Object.keys(registry)).toEqual(effectiveApi);
+        expect(result).toEqual(
+          new Map([
+            [1, 300],
+            [2, 550],
+          ]),
+        );
+      });
+    });
+
+    // test('mixing function and object facades', () => {
+    //   const facade = {
+    //     ...balar.object(budgetsRepo, {
+    //       api: ApiType.Bulk,
+    //     }),
+    //     noop: scalar(async (arr: number[]) => new Map(arr.map((id) => [id, id]))),
+    //   };
+    // });
   });
 });
