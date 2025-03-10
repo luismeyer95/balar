@@ -1,23 +1,15 @@
 import crypto from 'node:crypto';
 import {
-  ScalarRegistryEntry,
   RegistryEntry,
   BulkFn,
-  BulkRegistryEntry,
-  BulkFacade as BulkFacade,
-  ScalarFn,
   Facade,
   CheckedRegistryEntry,
   BulkMethods,
-  ScalarFacade as ScalarFacade,
+  ObjectFacade,
+  BalarFn,
 } from './api';
 import { EXECUTION } from './constants';
 import { getMethodsOfClassObject } from './utils';
-
-export enum ApiType {
-  Bulk = 'bulk',
-  Scalar = 'scalar',
-}
 
 export function facade<R extends Record<string, CheckedRegistryEntry<any, any, any>>>(
   bulkOpRegistry: R,
@@ -30,11 +22,7 @@ export function facade<R extends Record<string, CheckedRegistryEntry<any, any, a
 
   for (const entryName of Object.keys(bulkOpRegistry)) {
     const entry = bulkOpRegistry[entryName];
-
-    const fn =
-      entry.__brand === 'bulk'
-        ? generateUserExposedBulkFn(entryName, entry)
-        : generateUserExposedScalarFn(entryName, entry);
+    const fn = generateUserExposedFn(entryName, entry);
 
     scalarHandlers[entryName as keyof R] = fn as Facade<R>[keyof R];
   }
@@ -46,14 +34,9 @@ export function object<
   O extends Record<string, any>,
   P extends BulkMethods<O> & string = BulkMethods<O> & string,
   E extends BulkMethods<O> & string = never,
-  A extends ApiType = ApiType.Scalar,
->(
-  classObject: O,
-  opts: { api?: A; pick?: P[]; exclude?: E[] } = {},
-): A extends ApiType.Scalar ? ScalarFacade<O, P, E> : BulkFacade<O, P, E> {
-  opts.api ??= ApiType.Scalar as A;
-
+>(classObject: O, opts: { pick?: P[]; exclude?: E[] } = {}): ObjectFacade<O, P, E> {
   const methodNames = getMethodsOfClassObject(classObject);
+
   type K = keyof O & string;
   const pickSet = new Set<K>(opts.pick ?? methodNames);
   const excludeSet = new Set<K>(opts.exclude ?? []);
@@ -62,21 +45,15 @@ export function object<
     (methodName) => pickSet.has(methodName) && !excludeSet.has(methodName),
   );
 
-  const entries: Record<string, BulkFn<any, any, any[]> | ScalarFn<any, any, any[]>> = {};
+  const entries: Record<string, BalarFn<unknown, unknown, unknown[]>> = {};
   for (const methodName of apiMethods) {
-    var method = classObject[methodName].bind(classObject);
+    const method = classObject[methodName].bind(classObject);
 
-    const fn =
-      opts.api === 'bulk'
-        ? generateUserExposedBulkFn(methodName, bulk(method))
-        : generateUserExposedScalarFn(methodName, scalar(method));
-
+    const fn = generateUserExposedFn(methodName, def(method));
     entries[methodName] = fn;
   }
 
-  return entries as A extends ApiType.Scalar
-    ? ScalarFacade<O, P, E>
-    : BulkFacade<O, P, E>;
+  return entries as ObjectFacade<O, P, E>;
 }
 
 /**
@@ -87,68 +64,40 @@ export function object<
  * As an added layer of type-safety, the registry's API is made to only
  * accept registry entries that have been wrapped in a call to `define()`.
  */
-export function scalar<I, O, Args extends readonly unknown[]>(
-  entry: RegistryEntry<I, O, Args> | BulkFn<I, O, Args>,
-): ScalarRegistryEntry<I, O, Args> {
+export function def<I, O, Args extends readonly unknown[]>(
+  entry:
+    | RegistryEntry<Exclude<I, unknown[]>, O, Args>
+    | BulkFn<Exclude<I, unknown[]>, O, Args>,
+): CheckedRegistryEntry<Exclude<I, unknown[]>, O, Args> {
   const registryEntry = 'fn' in entry ? entry : { fn: entry };
 
-  registryEntry.getArgsId ??= (args) => {
-    if (!args.length) {
-      // Optimization for no additionnal args
-      return '';
-    }
-    // Note: may produce different IDs on objects with different key order
-    return JSON.stringify(args);
-  };
+  const getArgsId =
+    registryEntry.getArgsId ??
+    ((args) => {
+      if (!args.length) {
+        // Optimization for no additional args
+        return '';
+      }
+      // TODO fix: may produce different IDs on objects with different key order
+      return JSON.stringify(args);
+    });
 
-  return { ...registryEntry, __brand: ApiType.Scalar } as ScalarRegistryEntry<I, O, Args>;
+  return { ...registryEntry, getArgsId, __brand: 'checked' };
 }
 
-export function bulk<I, O, Args extends readonly unknown[]>(
-  entry: RegistryEntry<I, O, Args> | BulkFn<I, O, Args>,
-): BulkRegistryEntry<I, O, Args> {
-  return { ...scalar(entry), __brand: ApiType.Bulk };
+function generateUniqueOperationPrefix(): string {
+  return crypto.randomBytes(8).toString('hex').substring(0, 8);
 }
 
-function generateUserExposedScalarFn(
+function generateUserExposedFn(
   entryName: string,
   entry: CheckedRegistryEntry<unknown, unknown, unknown[]>,
-): ScalarFn<unknown, unknown, unknown[]> {
-  const uniquePrefix = crypto.randomBytes(8).toString('hex').substring(0, 8);
-
-  return async (input: unknown, ...extraArgs: unknown[]): Promise<unknown> => {
-    const bulkContext = EXECUTION.getStore();
-
-    if (!bulkContext) {
-      throw new Error('balar error: scalar function called outside of a balar execution');
-    }
-
-    const argsId = entry.getArgsId(extraArgs);
-    const uniqueOperationId = `${uniquePrefix}-${entryName}${argsId}`;
-
-    // console.log('executing user scalar fn', uniqueOperationId, 'with', input);
-
-    const result = await bulkContext.callBulkHandler(
-      uniqueOperationId,
-      entry,
-      [input],
-      extraArgs,
-    );
-
-    return result!.get(input);
-  };
-}
-
-function generateUserExposedBulkFn(
-  entryName: string,
-  entry: BulkRegistryEntry<unknown, unknown, unknown[]>,
-): BulkFn<unknown, unknown, unknown[]> {
-  const uniquePrefix = crypto.randomBytes(8).toString('hex').substring(0, 8);
-
-  return async (
-    inputs: unknown[],
+  uniquePrefix: string = generateUniqueOperationPrefix(),
+): BalarFn<unknown, unknown, unknown[]> {
+  return (async (
+    input: unknown | unknown[],
     ...extraArgs: unknown[]
-  ): Promise<Map<unknown, unknown>> => {
+  ): Promise<unknown | Map<unknown, unknown>> => {
     const bulkContext = EXECUTION.getStore();
 
     if (!bulkContext) {
@@ -160,6 +109,8 @@ function generateUserExposedBulkFn(
 
     // console.log('executing user scalar fn', uniqueOperationId, 'with', input);
 
+    const inputs = Array.isArray(input) ? input : [input];
+
     const allResults = await bulkContext.callBulkHandler(
       uniqueOperationId,
       entry,
@@ -167,11 +118,15 @@ function generateUserExposedBulkFn(
       extraArgs,
     );
 
+    if (!Array.isArray(input)) {
+      return allResults.get(inputs[0])!;
+    }
+
     const result = new Map();
     for (const input of inputs) {
       result.set(input, allResults!.get(input));
     }
 
     return result;
-  };
+  }) as BalarFn<unknown, unknown, unknown[]>;
 }

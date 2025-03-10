@@ -7,7 +7,6 @@ import {
 } from './api';
 import { DEFAULT_MAX_CONCURRENT_EXECUTIONS, EXECUTION, PROCESSOR_ID } from './constants';
 import { chunk } from './utils';
-import { bulk, scalar, object, facade } from './config';
 
 export class BalarExecution<MainIn, MainOut> {
   internalRegistry: Map<string, BulkOperation<unknown, unknown, unknown[]>> = new Map();
@@ -202,7 +201,7 @@ export class BalarExecution<MainIn, MainOut> {
     }
 
     // Returns the whole result set => consumers should filter
-    return registryEntry.call!.cachedPromise;
+    return registryEntry.call!.cachedPromise!;
   }
 }
 
@@ -225,12 +224,4 @@ export async function execute<In, Out>(
   return execution.runNested(requests, processor);
 }
 
-export default {
-  execute,
-  scalar,
-  bulk,
-  object,
-  facade,
-};
-
-export { scalar, bulk, object, facade } from './config';
+export { def as scalar, object, facade } from './config';

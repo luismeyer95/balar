@@ -1,5 +1,4 @@
-import { ApiType } from '../src/config';
-import { bulk, scalar } from '../src/index';
+import { def } from '../src/config';
 import * as balar from '../src/index';
 import {
   Account,
@@ -26,26 +25,24 @@ describe('tests', () => {
   function createDefaultRegistry() {
     return balar.facade({
       // Register your bulk API dependencies
-      getAccountsById: scalar(spyGetAccountsById as typeof accountsRepo.getAccountsById),
+      getAccountsById: def(spyGetAccountsById as typeof accountsRepo.getAccountsById),
 
-      getCurrentBudget: scalar(
+      getCurrentBudget: def(spyGetCurrentBudgets as typeof budgetsRepo.getCurrentBudgets),
+      getCurrentBudgets: def(
         spyGetCurrentBudgets as typeof budgetsRepo.getCurrentBudgets,
       ),
-      getCurrentBudgets: bulk(
-        spyGetCurrentBudgets as typeof budgetsRepo.getCurrentBudgets,
-      ),
 
-      updateBudget: scalar(spyUpdateBudgets as typeof budgetsRepo.updateBudgets),
-      updateBudgets: bulk(spyUpdateBudgets as typeof budgetsRepo.updateBudgets),
+      updateBudget: def(spyUpdateBudgets as typeof budgetsRepo.updateBudgets),
+      updateBudgets: def(spyUpdateBudgets as typeof budgetsRepo.updateBudgets),
 
-      getBudgetSpend: scalar(spyGetBudgetSpends as typeof budgetsRepo.getBudgetSpends),
-      getBudgetSpends: bulk(spyGetBudgetSpends as typeof budgetsRepo.getBudgetSpends),
+      getBudgetSpend: def(spyGetBudgetSpends as typeof budgetsRepo.getBudgetSpends),
+      getBudgetSpends: def(spyGetBudgetSpends as typeof budgetsRepo.getBudgetSpends),
 
-      linkAccountToBudgets: scalar({
+      linkAccountToBudgets: def({
         fn: spyLinkBudgetsToAccount as typeof accountsRepo.linkAccountToBudgets,
       }),
 
-      inspect: scalar(spyInspect as (...args: any[]) => Promise<Map<any, void>>),
+      inspect: def(spyInspect as (...args: any[]) => Promise<Map<any, void>>),
     });
   }
 
@@ -84,18 +81,29 @@ describe('tests', () => {
   });
 
   describe('facade', () => {
-    describe('object - scalar', () => {
-      // Different ways to produce the same scalar facade type
-      const scalarTestCases = [
+    test('array as scalar not supported', async () => {
+      const mock = jest.fn(async (_: number[][]) => new Map<number[], boolean>());
+      const registry = balar.facade({
+        // @ts-expect-error
+        takesArrayScalar: def(mock),
+      });
+
+      await balar.execute([1, 2], async function (args: number) {
+        return await registry.takesArrayScalar([args]);
+      });
+
+      // Result is unexpectedly a 1-level deep array as the runtime resolved
+      // signature was bulk (can't easily disambiguate between scalar and bulk
+      // calls for array types).
+      expect(mock).toHaveBeenCalledWith([1, 2]);
+    });
+
+    describe('object', () => {
+      // Different ways to produce the same facade type
+      const testCases = [
         {
-          test: 'default object facade (scalar)',
+          test: 'default object facade',
           registry: balar.object(budgetsRepo),
-        },
-        {
-          test: 'explicit scalar facade',
-          registry: balar.object(budgetsRepo, {
-            api: ApiType.Scalar,
-          }),
         },
         {
           test: 'pick facade',
@@ -113,12 +121,12 @@ describe('tests', () => {
         },
       ];
 
-      test.each(scalarTestCases)('$test', async ({ registry, picks, excludes }) => {
+      test.each(testCases)('$test', async ({ registry, picks, excludes }) => {
         budgetsRepo.spendOnBudget(1, 200);
         budgetsRepo.spendOnBudget(2, 450);
 
         // Act
-        const result = await balar.execute(
+        const resultWithScalarApi = await balar.execute(
           [1, 2],
           async function getRemainingAmount(budgetId: number): Promise<number> {
             const currentBudget = await registry.getCurrentBudgets(budgetId);
@@ -128,53 +136,8 @@ describe('tests', () => {
           },
         );
 
-        // Assert
-        const effectiveApi = (picks ?? Object.keys(registry)).filter(
-          (key) => !(excludes ?? []).includes(key),
-        );
-        expect(Object.keys(registry)).toEqual(effectiveApi);
-        expect(result).toEqual(
-          new Map([
-            [1, 300],
-            [2, 550],
-          ]),
-        );
-      });
-    });
-
-    describe('object - bulk', () => {
-      // Different ways to produce the same bulk facade type
-      const bulkTestCases = [
-        {
-          test: 'explicit bulk facade',
-          registry: balar.object(budgetsRepo, {
-            api: ApiType.Bulk,
-          }),
-        },
-        {
-          test: 'pick facade',
-          picks: ['getCurrentBudgets', 'getBudgetSpends'],
-          registry: balar.object(budgetsRepo, {
-            api: ApiType.Bulk,
-            pick: ['getCurrentBudgets', 'getBudgetSpends'],
-          }),
-        },
-        {
-          test: 'exclude facade',
-          excludes: ['updateBudgets'],
-          registry: balar.object(budgetsRepo, {
-            api: ApiType.Bulk,
-            exclude: ['updateBudgets'],
-          }),
-        },
-      ];
-
-      test.each(bulkTestCases)('$test', async ({ registry, picks, excludes }) => {
-        budgetsRepo.spendOnBudget(1, 200);
-        budgetsRepo.spendOnBudget(2, 450);
-
         // Act
-        const result = await balar.execute(
+        const resultWithBulkApi = await balar.execute(
           [1, 2],
           async function getRemainingAmount(budgetId: number): Promise<number> {
             const currentBudget = (await registry.getCurrentBudgets([budgetId])).get(
@@ -193,7 +156,8 @@ describe('tests', () => {
           (key) => !(excludes ?? []).includes(key),
         );
         expect(Object.keys(registry)).toEqual(effectiveApi);
-        expect(result).toEqual(
+        expect(resultWithScalarApi).toEqual(resultWithBulkApi);
+        expect(resultWithBulkApi).toEqual(
           new Map([
             [1, 300],
             [2, 550],
@@ -376,7 +340,7 @@ describe('tests', () => {
 
       const spyBulkMul = jest.fn(bulkMul);
       const registry = balar.facade({
-        mul: scalar(spyBulkMul),
+        mul: def(spyBulkMul),
       });
 
       // Act
@@ -432,8 +396,12 @@ describe('tests', () => {
 
       expect(spyInspect).toHaveBeenCalledTimes(1);
       expect(spyInspect).toHaveBeenCalledWith([
-        [200, 1, undefined, undefined],
-        [10, undefined],
+        200,
+        1,
+        undefined,
+        undefined,
+        10,
+        undefined,
       ]);
 
       const expected = new Map([
@@ -562,8 +530,8 @@ describe('tests', () => {
       const noopMock1 = jest.fn(noop);
       const noopMock2 = jest.fn(noop);
       const registry = balar.facade({
-        noop1: scalar(noopMock1),
-        noop2: scalar(noopMock2),
+        noop1: def(noopMock1),
+        noop2: def(noopMock2),
       });
 
       // Act
@@ -657,7 +625,7 @@ describe('tests', () => {
       });
 
       const registry = balar.facade({
-        mayThrow: scalar(mayThrow),
+        mayThrow: def(mayThrow),
       });
 
       // Act
@@ -684,8 +652,8 @@ describe('tests', () => {
       const noopOdd = jest.fn(noop);
 
       const registry = balar.facade({
-        noopEven: scalar(noopEven),
-        noopOdd: scalar(noopOdd),
+        noopEven: def(noopEven),
+        noopOdd: def(noopOdd),
       });
 
       // Act
@@ -723,7 +691,7 @@ describe('tests', () => {
       const noopMock = jest.fn(noop);
 
       const registry = balar.facade({
-        noop: scalar(noopMock),
+        noop: def(noopMock),
       });
 
       // Act
@@ -767,8 +735,8 @@ describe('tests', () => {
       const spyGt = jest.fn(gt);
 
       const registry = balar.facade({
-        lt: scalar(spyLt),
-        gt: scalar(spyGt),
+        lt: def(spyLt),
+        gt: def(spyGt),
       });
 
       // Act
@@ -860,8 +828,8 @@ describe('tests', () => {
       // Arrange
       const noop2 = jest.fn(async (arr: number[]) => new Map(arr.map((id) => [id, id])));
       const registry = balar.facade({
-        noop1: scalar(async (arr: number[]) => new Map(arr.map((id) => [id, id]))),
-        noop2: scalar(noop2),
+        noop1: def(async (arr: number[]) => new Map(arr.map((id) => [id, id]))),
+        noop2: def(noop2),
       });
 
       // Act
@@ -976,9 +944,9 @@ describe('tests', () => {
     const spyBulkAdd3 = jest.fn(bulkAdd3);
 
     const registry = balar.facade({
-      mul: scalar(spyBulkMul),
-      mulObj: scalar(spyBulkMulObj),
-      add3: scalar({
+      mul: def(spyBulkMul),
+      mulObj: def(spyBulkMulObj),
+      add3: def({
         fn: spyBulkAdd3,
         getArgsId: ([two, three]) => (two + three).toString(),
       }),
