@@ -10,7 +10,7 @@ export type BulkFn<In, Out, Args extends readonly unknown[]> = (
 export type ScalarFn<In, Out, Args extends readonly unknown[]> = (
   request: In,
   ...args: Args
-) => Promise<Out>;
+) => Promise<Out | undefined>;
 
 export type BalarFn<In, Out, Args extends readonly unknown[]> = BulkFn<In, Out, Args> &
   ScalarFn<In, Out, Args>;
@@ -39,6 +39,7 @@ export type BulkInvocation<In, Out> = {
 
 export type ExecuteOptions = {
   concurrency?: number;
+  logger?: (message: string) => void;
 };
 
 /**

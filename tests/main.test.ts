@@ -1,5 +1,5 @@
+import { balar } from '../src';
 import { def } from '../src/config';
-import * as balar from '../src/index';
 import {
   Account,
   AccountsRepository,
@@ -23,25 +23,17 @@ describe('tests', () => {
   let registry = createDefaultRegistry();
 
   function createDefaultRegistry() {
-    return balar.facade({
+    return balar.wrap.fns({
       // Register your bulk API dependencies
       getAccountsById: def(spyGetAccountsById as typeof accountsRepo.getAccountsById),
-
-      getCurrentBudget: def(spyGetCurrentBudgets as typeof budgetsRepo.getCurrentBudgets),
       getCurrentBudgets: def(
         spyGetCurrentBudgets as typeof budgetsRepo.getCurrentBudgets,
       ),
-
-      updateBudget: def(spyUpdateBudgets as typeof budgetsRepo.updateBudgets),
       updateBudgets: def(spyUpdateBudgets as typeof budgetsRepo.updateBudgets),
-
-      getBudgetSpend: def(spyGetBudgetSpends as typeof budgetsRepo.getBudgetSpends),
       getBudgetSpends: def(spyGetBudgetSpends as typeof budgetsRepo.getBudgetSpends),
-
       linkAccountToBudgets: def({
         fn: spyLinkBudgetsToAccount as typeof accountsRepo.linkAccountToBudgets,
       }),
-
       inspect: def(spyInspect as (...args: any[]) => Promise<Map<any, void>>),
     });
   }
@@ -83,7 +75,24 @@ describe('tests', () => {
   describe('facade', () => {
     test('array as scalar not supported', async () => {
       const mock = jest.fn(async (_: number[][]) => new Map<number[], boolean>());
-      const registry = balar.facade({
+      const registry = balar.wrap.fns({
+        // @ts-expect-error
+        takesArrayScalar: def(mock),
+      });
+
+      await balar.execute([1, 2], async function (args: number) {
+        return await registry.takesArrayScalar([args]);
+      });
+
+      // Result is unexpectedly a 1-level deep array as the runtime resolved
+      // signature was bulk (can't easily disambiguate between scalar and bulk
+      // calls for array types).
+      expect(mock).toHaveBeenCalledWith([1, 2]);
+    });
+
+    test('array as scalar not supported', async () => {
+      const mock = jest.fn(async (_: number[][]) => new Map<number[], boolean>());
+      const registry = balar.wrap.fns({
         // @ts-expect-error
         takesArrayScalar: def(mock),
       });
@@ -103,19 +112,19 @@ describe('tests', () => {
       const testCases = [
         {
           test: 'default object facade',
-          registry: balar.object(budgetsRepo),
+          registry: balar.wrap.object(budgetsRepo),
         },
         {
           test: 'pick facade',
           picks: ['getCurrentBudgets', 'getBudgetSpends'],
-          registry: balar.object(budgetsRepo, {
+          registry: balar.wrap.object(budgetsRepo, {
             pick: ['getCurrentBudgets', 'getBudgetSpends'],
           }),
         },
         {
           test: 'exclude facade',
           excludes: ['updateBudgets'],
-          registry: balar.object(budgetsRepo, {
+          registry: balar.wrap.object(budgetsRepo, {
             exclude: ['updateBudgets'],
           }),
         },
@@ -132,7 +141,7 @@ describe('tests', () => {
             const currentBudget = await registry.getCurrentBudgets(budgetId);
             const budgetSpent = await registry.getBudgetSpends(budgetId);
 
-            return currentBudget.amount - (budgetSpent || 0);
+            return currentBudget!.amount - (budgetSpent || 0);
           },
         );
 
@@ -169,7 +178,7 @@ describe('tests', () => {
 
   describe('basic tests', () => {
     test('executing scalar function outside bulk exec should fail', async () => {
-      await expect(registry.getCurrentBudget(1)).rejects.toThrowError();
+      await expect(registry.getCurrentBudgets(1)).rejects.toThrowError();
     });
 
     test('no op processor', async () => {
@@ -190,8 +199,8 @@ describe('tests', () => {
       const result = await balar.execute(
         [],
         async function getBudgetAmount(budgetId: number): Promise<number> {
-          const currentBudget = await registry.getCurrentBudget(budgetId);
-          return currentBudget.amount;
+          const currentBudget = await registry.getCurrentBudgets(budgetId);
+          return currentBudget!.amount;
         },
       );
 
@@ -204,8 +213,8 @@ describe('tests', () => {
       const result = await balar.execute(
         [1],
         async function (id: number): Promise<number> {
-          const currentBudget = await registry.getCurrentBudget(id);
-          return currentBudget.amount;
+          const currentBudget = await registry.getCurrentBudgets(id);
+          return currentBudget!.amount;
         },
       );
 
@@ -241,13 +250,13 @@ describe('tests', () => {
             return issues;
           }
 
-          const currentBudget = await registry.getCurrentBudget(request.id);
-          if (requestBudget < currentBudget.amount) {
+          const currentBudget = await registry.getCurrentBudgets(request.id);
+          if (requestBudget < currentBudget!.amount) {
             issues.errors.push('budget must not be lowered');
             return issues;
           }
 
-          const updatedBudget = await registry.updateBudget(request);
+          const updatedBudget = await registry.updateBudgets(request);
           if (!updatedBudget) {
             issues.errors.push('budget update failed');
             return issues;
@@ -339,7 +348,7 @@ describe('tests', () => {
       }
 
       const spyBulkMul = jest.fn(bulkMul);
-      const registry = balar.facade({
+      const registry = balar.wrap.fns({
         mul: def(spyBulkMul),
       });
 
@@ -427,13 +436,13 @@ describe('tests', () => {
           const issues = new Issues();
 
           const [currentBudget, budgetSpend] = await Promise.all([
-            registry.getCurrentBudget(budgetId),
-            registry.getBudgetSpend(budgetId),
+            registry.getCurrentBudgets(budgetId),
+            registry.getBudgetSpends(budgetId),
           ]);
 
-          if (budgetSpend > currentBudget.amount) {
+          if (budgetSpend! > currentBudget!.amount) {
             issues.errors.push(
-              `current spend is above limit: ${budgetSpend} > ${currentBudget.amount}`,
+              `current spend is above limit: ${budgetSpend} > ${currentBudget!.amount}`,
             );
             return issues;
           }
@@ -458,8 +467,8 @@ describe('tests', () => {
     test('concurrent bulk execs using the same scalar fns should be isolated', async () => {
       // Arrange
       async function processor(budgetId: number): Promise<number> {
-        const currentBudget = await registry.getCurrentBudget(budgetId);
-        return currentBudget.amount;
+        const currentBudget = await registry.getCurrentBudgets(budgetId);
+        return currentBudget!.amount;
       }
 
       // Act
@@ -499,11 +508,11 @@ describe('tests', () => {
           }
 
           const [currentBudget, budgetSpend] = await Promise.all([
-            registry.getCurrentBudget(budgetId),
-            registry.getBudgetSpend(budgetId),
+            registry.getCurrentBudgets(budgetId),
+            registry.getBudgetSpends(budgetId),
           ]);
 
-          return currentBudget.amount - (budgetSpend || 0);
+          return currentBudget!.amount - (budgetSpend || 0);
         },
       );
 
@@ -529,7 +538,7 @@ describe('tests', () => {
       }
       const noopMock1 = jest.fn(noop);
       const noopMock2 = jest.fn(noop);
-      const registry = balar.facade({
+      const registry = balar.wrap.fns({
         noop1: def(noopMock1),
         noop2: def(noopMock2),
       });
@@ -538,13 +547,14 @@ describe('tests', () => {
       const budgetIds = [1, 2, 3, 4];
       const issues = await balar.execute(budgetIds, async (n) => {
         let p1 = registry.noop1(n);
-        let p2 = Promise.resolve(0);
+        let p2: Promise<number | undefined> = Promise.resolve(0);
 
         if (n >= 3) {
           p2 = registry.noop2(n);
         }
 
-        return (await p1) + (await p2);
+        const [one, two] = await Promise.all([p1, p2]);
+        return one! + two!;
       });
 
       // Assert
@@ -569,10 +579,10 @@ describe('tests', () => {
       const requestIds = [1, 2, 3]; // all budgets are under the same account
       const issues = await balar.execute(
         requestIds,
-        async function processor(budgetId: number): Promise<Account> {
-          const budget = await registry.getCurrentBudget(budgetId);
+        async function processor(budgetId: number) {
+          const budget = await registry.getCurrentBudgets(budgetId);
 
-          return await registry.getAccountsById(budget.accountId);
+          return registry.getAccountsById(budget!.accountId);
         },
       );
 
@@ -598,7 +608,7 @@ describe('tests', () => {
         balar.execute(
           [1, 2, 777],
           async function getBudgetOrThrowIfNotExist(id: number): Promise<number> {
-            const currentBudget = await registry.getCurrentBudget(id);
+            const currentBudget = await registry.getCurrentBudgets(id);
             if (currentBudget === undefined) {
               throw new Error('budget does not exist');
             }
@@ -624,7 +634,7 @@ describe('tests', () => {
         );
       });
 
-      const registry = balar.facade({
+      const registry = balar.wrap.fns({
         mayThrow: def(mayThrow),
       });
 
@@ -651,7 +661,7 @@ describe('tests', () => {
       const noopEven = jest.fn(noop);
       const noopOdd = jest.fn(noop);
 
-      const registry = balar.facade({
+      const registry = balar.wrap.fns({
         noopEven: def(noopEven),
         noopOdd: def(noopOdd),
       });
@@ -690,7 +700,7 @@ describe('tests', () => {
 
       const noopMock = jest.fn(noop);
 
-      const registry = balar.facade({
+      const registry = balar.wrap.fns({
         noop: def(noopMock),
       });
 
@@ -704,7 +714,7 @@ describe('tests', () => {
           }
         })();
 
-        return typeof result === 'number' ? result : [...result.values()];
+        return typeof result === 'number' ? result : [...result!.values()];
       });
 
       // Assert
@@ -734,7 +744,7 @@ describe('tests', () => {
       const spyLt = jest.fn(lt);
       const spyGt = jest.fn(gt);
 
-      const registry = balar.facade({
+      const registry = balar.wrap.fns({
         lt: def(spyLt),
         gt: def(spyGt),
       });
@@ -804,10 +814,10 @@ describe('tests', () => {
           }
 
           const spends = await balar.execute(account.budgetIds, (budgetId) =>
-            registry.getBudgetSpend(budgetId),
+            registry.getBudgetSpends(budgetId).then((s) => s!),
           );
 
-          return [...spends.values()].reduce((acc, spend) => acc + (spend || 0), 0);
+          return [...spends!.values()].reduce((acc, spend) => acc + (spend || 0), 0);
         },
       );
 
@@ -827,7 +837,7 @@ describe('tests', () => {
     test('multiple nesting levels with processing before and after nestings', async () => {
       // Arrange
       const noop2 = jest.fn(async (arr: number[]) => new Map(arr.map((id) => [id, id])));
-      const registry = balar.facade({
+      const registry = balar.wrap.fns({
         noop1: def(async (arr: number[]) => new Map(arr.map((id) => [id, id]))),
         noop2: def(noop2),
       });
@@ -896,18 +906,18 @@ describe('tests', () => {
 
           // Run nested execute() context
           const spends = await balar.execute(account.budgetIds, (budgetId) =>
-            registry.getBudgetSpend(budgetId),
+            registry.getBudgetSpends(budgetId),
           );
 
           let maxSpendingBudgetId = 0;
           for (const [budgetId, amount] of spends) {
-            if (!maxSpendingBudgetId || amount > spends.get(maxSpendingBudgetId)!) {
+            if (!maxSpendingBudgetId || amount! > spends.get(maxSpendingBudgetId)!) {
               maxSpendingBudgetId = budgetId;
             }
           }
 
           // Continue main context after popping the nested context
-          return registry.getCurrentBudget(maxSpendingBudgetId);
+          return registry.getCurrentBudgets(maxSpendingBudgetId);
         },
       );
 
@@ -943,7 +953,7 @@ describe('tests', () => {
     const spyBulkMulObj = jest.fn(bulkMulObj);
     const spyBulkAdd3 = jest.fn(bulkAdd3);
 
-    const registry = balar.facade({
+    const registry = balar.wrap.fns({
       mul: def(spyBulkMul),
       mulObj: def(spyBulkMulObj),
       add3: def({
@@ -1019,6 +1029,30 @@ describe('tests', () => {
       expect(issues).toEqual(expected);
       expect(spyBulkAdd3).toHaveBeenCalledTimes(1);
       expect(spyBulkAdd3).toHaveBeenCalledWith([1, 2, 3], 3, 2);
+    });
+  });
+
+  describe('concurrency', () => {
+    test('configure max concurrency', async () => {
+      // Arrange
+      const mock = jest.fn(async (n: number[]) => new Map(n.map((id) => [id, id])));
+      const reg = balar.wrap.fns({
+        noop: def(mock),
+      });
+
+      // Act
+      await balar.execute(
+        [1, 2, 3, 4],
+        async (n) => {
+          await reg.noop(n);
+        },
+        { concurrency: 2 },
+      );
+
+      // Assert
+      expect(mock).toHaveBeenCalledTimes(2);
+      expect(mock).toHaveBeenNthCalledWith(1, [1, 2]);
+      expect(mock).toHaveBeenNthCalledWith(2, [3, 4]);
     });
   });
 });

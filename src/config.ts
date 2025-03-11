@@ -11,17 +11,43 @@ import {
 import { EXECUTION } from './constants';
 import { getMethodsOfClassObject } from './utils';
 
-export function facade<R extends Record<string, CheckedRegistryEntry<any, any, any>>>(
-  bulkOpRegistry: R,
+const wrap = { fns, object };
+export { def, wrap };
+
+/**
+ * Creates a registry of bulk functions that are meant to be used within balar execution contexts (e.g. inside the `processorFn` provided to `balar.execute(inputs, processorFn)`).
+ *
+ * @example
+ *
+ * ```ts
+ * import { balar } from 'balar';
+ *
+ * async function getBooks(bookIds: number[]): Promise<Map<number, Book>> { ... }
+ * const booksRepository = balar.wrap.fns({
+ *   getBook: balar.def(getBooks)
+ * })
+ *
+ * // `getBooks()` is only called once with [1, 2, 3]
+ * const bookNames = await balar.execute([1, 2, 3], async (bookId: number) => {
+ *   const book = await booksRepository.getBook(bookId);
+ *   return book?.name;
+ * })
+ * ```
+ *
+ * @param bulkFunctions A record of bulk function configurations (created using `balar.def()`).
+ *
+ * @returns An object containing balar functions ready for use in balar execution contexts.
+ */
+function fns<R extends Record<string, CheckedRegistryEntry<any, any, any>>>(
+  bulkFunctions: R,
 ): Facade<R> {
-  // Creates handlers from bulk functions.
-  // Those are the user-exposed functions which are not aware
-  // of any execution context. They delegate execution to the context-aware
-  // handlers taken from the balar execution stored in async context.
+  // Creates handlers from bulk functions. Those are the user-exposed functions which are
+  // not aware of any execution context. They delegate execution to the context-aware handlers
+  // taken from the balar execution stored in async context.
   const scalarHandlers = {} as Facade<R>;
 
-  for (const entryName of Object.keys(bulkOpRegistry)) {
-    const entry = bulkOpRegistry[entryName];
+  for (const entryName of Object.keys(bulkFunctions)) {
+    const entry = bulkFunctions[entryName];
     const fn = generateUserExposedFn(entryName, entry);
 
     scalarHandlers[entryName as keyof R] = fn as Facade<R>[keyof R];
@@ -30,7 +56,35 @@ export function facade<R extends Record<string, CheckedRegistryEntry<any, any, a
   return scalarHandlers;
 }
 
-export function object<
+/**
+ * Given an input object containing bulk methods, creates a wrapper that hooks into the balar execution context to queue and batch calls into efficient bulk operations. Instead of making separate calls for each input, the wrapped methods will collect all inputs and make a single bulk call.
+ *
+ * @example
+ *
+ * ```ts
+ * import { balar } from 'balar';
+ *
+ * class BooksRepository {
+ *   async getBooks(bookId: number[]): Promise<Map<number, Book>> { ... }
+ * }
+ *
+ * const booksRepository = balar.wrap.object(new BooksRepository())
+ *
+ * // `getBooks()` is only called once with [1, 2, 3]
+ * const bookAuthors = await balar.execute([1, 2, 3], async (bookId: number) => {
+ *   const book = await booksRepository.getBook(bookId);
+ *   return book?.name;
+ * })
+ * ```
+ *
+ * @param classObject An object containing bulk methods.
+ * @param opts An options object containing `pick` and `exclude` properties to control which bulk methods of the input object should be exposed in the output object.
+ * @param {string[]} opts.pick The names of bulk methods to include.
+ * @param {string[]} opts.exclude The names of bulk methods to exclude.
+ *
+ * @returns An object containing balar functions ready for use in balar execution contexts.
+ */
+function object<
   O extends Record<string, any>,
   P extends BulkMethods<O> & string = BulkMethods<O> & string,
   E extends BulkMethods<O> & string = never,
@@ -56,15 +110,7 @@ export function object<
   return entries as ObjectFacade<O, P, E>;
 }
 
-/**
- * Due to some TypeScript limitations, it is only possible to ensure
- * correct type-checking at the registry entry level if each entry
- * configuration is wrapped in a function like this one.
- *
- * As an added layer of type-safety, the registry's API is made to only
- * accept registry entries that have been wrapped in a call to `define()`.
- */
-export function def<I, O, Args extends readonly unknown[]>(
+function def<I, O, Args extends readonly unknown[]>(
   entry:
     | RegistryEntry<Exclude<I, unknown[]>, O, Args>
     | BulkFn<Exclude<I, unknown[]>, O, Args>,
@@ -75,7 +121,7 @@ export function def<I, O, Args extends readonly unknown[]>(
     registryEntry.getArgsId ??
     ((args) => {
       if (!args.length) {
-        // Optimization for no additional args
+        // Small optimization for 0 extra args
         return '';
       }
       // TODO fix: may produce different IDs on objects with different key order
@@ -83,10 +129,6 @@ export function def<I, O, Args extends readonly unknown[]>(
     });
 
   return { ...registryEntry, getArgsId, __brand: 'checked' };
-}
-
-function generateUniqueOperationPrefix(): string {
-  return crypto.randomBytes(8).toString('hex').substring(0, 8);
 }
 
 function generateUserExposedFn(
@@ -97,7 +139,7 @@ function generateUserExposedFn(
   return (async (
     input: unknown | unknown[],
     ...extraArgs: unknown[]
-  ): Promise<unknown | Map<unknown, unknown>> => {
+  ): Promise<unknown | undefined | Map<unknown, unknown>> => {
     const bulkContext = EXECUTION.getStore();
 
     if (!bulkContext) {
@@ -107,7 +149,7 @@ function generateUserExposedFn(
     const argsId = entry.getArgsId(extraArgs);
     const uniqueOperationId = `${uniquePrefix}-${entryName}${argsId}`;
 
-    // console.log('executing user scalar fn', uniqueOperationId, 'with', input);
+    bulkContext.logger?.('executing user scalar fn', uniqueOperationId, 'with', input);
 
     const inputs = Array.isArray(input) ? input : [input];
 
@@ -119,7 +161,7 @@ function generateUserExposedFn(
     );
 
     if (!Array.isArray(input)) {
-      return allResults.get(inputs[0])!;
+      return allResults.get(inputs[0]);
     }
 
     const result = new Map();
@@ -129,4 +171,8 @@ function generateUserExposedFn(
 
     return result;
   }) as BalarFn<unknown, unknown, unknown[]>;
+}
+
+function generateUniqueOperationPrefix(): string {
+  return crypto.randomBytes(8).toString('hex').substring(0, 8);
 }
