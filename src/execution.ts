@@ -8,7 +8,7 @@ import {
 import { EXECUTION, PROCESSOR_ID } from './constants';
 import { chunk } from './utils';
 
-export async function execute<In, Out>(
+export async function run<In, Out>(
   requests: In[],
   processor: (request: In) => Promise<Out>,
   opts: ExecuteOptions = {},

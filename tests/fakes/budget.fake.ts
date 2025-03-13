@@ -5,6 +5,7 @@ export interface UpdateRequest<T> {
 
 export class UpdateIssues {
   errors: string[];
+  warnings: string[] = [];
 
   constructor(...errors: string[]) {
     this.errors = errors;

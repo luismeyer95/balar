@@ -80,7 +80,7 @@ describe('tests', () => {
         takesArrayScalar: def(mock),
       });
 
-      await balar.execute([1, 2], async function (args: number) {
+      await balar.run([1, 2], async function (args: number) {
         return await registry.takesArrayScalar([args]);
       });
 
@@ -97,7 +97,7 @@ describe('tests', () => {
         takesArrayScalar: def(mock),
       });
 
-      await balar.execute([1, 2], async function (args: number) {
+      await balar.run([1, 2], async function (args: number) {
         return await registry.takesArrayScalar([args]);
       });
 
@@ -135,7 +135,7 @@ describe('tests', () => {
         budgetsRepo.spendOnBudget(2, 450);
 
         // Act
-        const resultWithScalarApi = await balar.execute(
+        const resultWithScalarApi = await balar.run(
           [1, 2],
           async function getRemainingAmount(budgetId: number): Promise<number> {
             const currentBudget = await registry.getCurrentBudgets(budgetId);
@@ -146,7 +146,7 @@ describe('tests', () => {
         );
 
         // Act
-        const resultWithBulkApi = await balar.execute(
+        const resultWithBulkApi = await balar.run(
           [1, 2],
           async function getRemainingAmount(budgetId: number): Promise<number> {
             const currentBudget = (await registry.getCurrentBudgets([budgetId])).get(
@@ -183,7 +183,7 @@ describe('tests', () => {
 
     test('no op processor', async () => {
       // Act
-      const result = await balar.execute([1, 2], async function () {});
+      const result = await balar.run([1, 2], async function () {});
 
       // Assert
       expect(result).toEqual(
@@ -196,7 +196,7 @@ describe('tests', () => {
 
     test('empty inputs', async () => {
       // Act
-      const result = await balar.execute(
+      const result = await balar.run(
         [],
         async function getBudgetAmount(budgetId: number): Promise<number> {
           const currentBudget = await registry.getCurrentBudgets(budgetId);
@@ -210,13 +210,10 @@ describe('tests', () => {
 
     test('simple workflow with 1 checkpoint', async () => {
       // Act
-      const result = await balar.execute(
-        [1],
-        async function (id: number): Promise<number> {
-          const currentBudget = await registry.getCurrentBudgets(id);
-          return currentBudget!.amount;
-        },
-      );
+      const result = await balar.run([1], async function (id: number): Promise<number> {
+        const currentBudget = await registry.getCurrentBudgets(id);
+        return currentBudget!.amount;
+      });
 
       // Assert
       const expected = new Map([[1, 500]]);
@@ -236,30 +233,26 @@ describe('tests', () => {
         { id: 3, amount: 1 }, // fail: can't lower (from 1500 to 1)
         { id: 4, amount: 3000 }, // fail (forced failure)
       ];
-      const issues = await balar.execute(
+      const issues = await balar.run(
         requests,
         async function updateBudgetWithValidation(request: {
           id: number;
           amount: number;
-        }): Promise<Issues | null> {
-          const issues = new Issues();
-          const requestBudget = request.amount;
+        }): Promise<string | null> {
+          const updateBudgetAmount = request.amount;
 
-          if (requestBudget === 0) {
-            issues.errors.push('budget should be greater than 0');
-            return issues;
+          if (updateBudgetAmount === 0) {
+            return 'budget should be greater than 0';
           }
 
           const currentBudget = await registry.getCurrentBudgets(request.id);
-          if (requestBudget < currentBudget!.amount) {
-            issues.errors.push('budget must not be lowered');
-            return issues;
+          if (updateBudgetAmount < currentBudget!.amount) {
+            return 'budget must not be lowered';
           }
 
           const updatedBudget = await registry.updateBudgets(request);
           if (!updatedBudget) {
-            issues.errors.push('budget update failed');
-            return issues;
+            return 'budget update failed';
           }
 
           return null;
@@ -269,9 +262,9 @@ describe('tests', () => {
       // Assert
       const expected = new Map([
         [{ id: 1, amount: 1000 }, null],
-        [{ id: 2, amount: 0 }, new Issues('budget should be greater than 0')],
-        [{ id: 3, amount: 1 }, new Issues('budget must not be lowered')],
-        [{ id: 4, amount: 3000 }, new Issues('budget update failed')],
+        [{ id: 2, amount: 0 }, 'budget should be greater than 0'],
+        [{ id: 3, amount: 1 }, 'budget must not be lowered'],
+        [{ id: 4, amount: 3000 }, 'budget update failed'],
       ]);
       expect(issues).toEqual(expected);
 
@@ -290,7 +283,7 @@ describe('tests', () => {
         { id: 3, amount: 1 }, // fail: can't lower (from 1500 to 1)
         { id: 4, amount: 3000 }, // fail (forced failure)
       ];
-      const issues = await balar.execute(
+      const issues = await balar.run(
         requests,
         async function updateBudgetWithValidation(request: {
           id: number;
@@ -354,7 +347,7 @@ describe('tests', () => {
 
       // Act
       const budgetIds = [1, 2, 3, 4];
-      const issues = await balar.execute(budgetIds, async (n) => {
+      const issues = await balar.run(budgetIds, async (n) => {
         return n % 2 === 0 ? registry.mul(n, 2) : registry.mul(n, 3);
       });
 
@@ -382,7 +375,7 @@ describe('tests', () => {
       budgetsRepo.spendOnBudget(5, 6);
 
       // Act/Assert
-      const result = await balar.execute(
+      const result = await balar.run(
         [accountId1, accountId2],
         async function getSpendOfAccount(accountId) {
           const account = await registry.getAccountsById(accountId);
@@ -430,7 +423,7 @@ describe('tests', () => {
 
       // Act
       const budgetIds = [1, 2, 3, 4];
-      const issues = await balar.execute(
+      const issues = await balar.run(
         budgetIds,
         async function (budgetId: number): Promise<Issues | true> {
           const issues = new Issues();
@@ -473,8 +466,8 @@ describe('tests', () => {
 
       // Act
       const [result1, result2] = await Promise.all([
-        balar.execute([1, 2], processor),
-        balar.execute([3, 4], processor),
+        balar.run([1, 2], processor),
+        balar.run([3, 4], processor),
       ]);
 
       // Assert
@@ -499,7 +492,7 @@ describe('tests', () => {
 
       // Act
       const budgetIds = [1, 2, 3, 4];
-      const results = await balar.execute(
+      const results = await balar.run(
         budgetIds,
         async function getRemainingBudget(budgetId: number) {
           // Arbitrary return for ID 4
@@ -545,7 +538,7 @@ describe('tests', () => {
 
       // Act
       const budgetIds = [1, 2, 3, 4];
-      const issues = await balar.execute(budgetIds, async (n) => {
+      const issues = await balar.run(budgetIds, async (n) => {
         let p1 = registry.noop1(n);
         let p2: Promise<number | undefined> = Promise.resolve(0);
 
@@ -577,7 +570,7 @@ describe('tests', () => {
     test('should not deduplicate equal inputs to bulk fn (not in scope)', async () => {
       // Act
       const requestIds = [1, 2, 3]; // all budgets are under the same account
-      const issues = await balar.execute(
+      const issues = await balar.run(
         requestIds,
         async function processor(budgetId: number) {
           const budget = await registry.getCurrentBudgets(budgetId);
@@ -604,8 +597,8 @@ describe('tests', () => {
   describe('exceptions', () => {
     test('should bubble up exception thrown directly inside processor', async () => {
       // Act
-      const executeCall = () =>
-        balar.execute(
+      const runCall = () =>
+        balar.run(
           [1, 2, 777],
           async function getBudgetOrThrowIfNotExist(id: number): Promise<number> {
             const currentBudget = await registry.getCurrentBudgets(id);
@@ -618,7 +611,7 @@ describe('tests', () => {
         );
 
       // Assert
-      await expect(executeCall).rejects.toThrow('budget does not exist');
+      await expect(runCall).rejects.toThrow('budget does not exist');
       expect(spyGetCurrentBudgets).toHaveBeenCalledTimes(1);
     });
 
@@ -639,13 +632,13 @@ describe('tests', () => {
       });
 
       // Act
-      const executeCall = () =>
-        balar.execute([1, 2, 777], async function (id: number) {
+      const runCall = () =>
+        balar.run([1, 2, 777], async function (id: number) {
           return registry.mayThrow(id);
         });
 
       // Assert
-      await expect(executeCall).rejects.toThrow('budget does not exist');
+      await expect(runCall).rejects.toThrow('budget does not exist');
       expect(mayThrow).toHaveBeenCalledTimes(1);
       expect(mayThrow).toHaveBeenCalledWith([1, 2, 777]);
     });
@@ -667,7 +660,7 @@ describe('tests', () => {
       });
 
       // Act
-      const result = await balar.execute([1, 2, 3, 4], async function (id: number) {
+      const result = await balar.run([1, 2, 3, 4], async function (id: number) {
         const result = await (() => {
           if (id % 2 === 0) {
             return registry.noopEven(id);
@@ -692,7 +685,7 @@ describe('tests', () => {
       );
     });
 
-    test('scalar vs execute', async () => {
+    test('scalar vs nested run', async () => {
       // Arrange
       async function noop(arr: number[]) {
         return new Map(arr.map((id) => [id, id]));
@@ -705,12 +698,12 @@ describe('tests', () => {
       });
 
       // Act
-      const result = await balar.execute([1, 2, 3, 4], async function (id: number) {
+      const result = await balar.run([1, 2, 3, 4], async function (id: number) {
         const result = await (() => {
           if (id % 2 === 0) {
             return registry.noop(id);
           } else {
-            return balar.execute([id * 10, id * 100], (id) => registry.noop(id));
+            return balar.run([id * 10, id * 100], (id) => registry.noop(id));
           }
         })();
 
@@ -750,7 +743,7 @@ describe('tests', () => {
       });
 
       // Act
-      const result = await balar.execute(
+      const result = await balar.run(
         [0, 1, 2, 3, 4, 5, 6, 7, 8],
         async function search(id: number) {
           if (await registry.lt(id, 5)) {
@@ -803,9 +796,9 @@ describe('tests', () => {
       budgetsRepo.spendOnBudget(5, 6);
     });
 
-    test('1-level nested execute() context should sync with concurrent executions at 0th level', async () => {
+    test('1-level nested run() context should sync with concurrent executions at 0th level', async () => {
       // Act/Assert
-      const result = await balar.execute(
+      const result = await balar.run(
         [accountId1, accountId2],
         async function getSpendOfAccount(accountId) {
           const account = await registry.getAccountsById(accountId);
@@ -813,7 +806,7 @@ describe('tests', () => {
             return null;
           }
 
-          const spends = await balar.execute(account.budgetIds, (budgetId) =>
+          const spends = await balar.run(account.budgetIds, (budgetId) =>
             registry.getBudgetSpends(budgetId).then((s) => s!),
           );
 
@@ -843,17 +836,17 @@ describe('tests', () => {
       });
 
       // Act
-      const result = await balar.execute([10, 15, 30], async function (a: number) {
+      const result = await balar.run([10, 15, 30], async function (a: number) {
         await registry.noop1(a);
 
-        const result = await balar.execute([a + 1, a + 11], async (b) => {
+        const result = await balar.run([a + 1, a + 11], async (b) => {
           if (b % 2 === 0) {
             return -1;
           }
 
           await Promise.all([registry.noop1(b), registry.noop2(b)]);
 
-          const result = await balar.execute([b + 1, b + 11], async (c: number) => {
+          const result = await balar.run([b + 1, b + 11], async (c: number) => {
             const [one, two] = [registry.noop1(c), registry.noop2(c)];
             await two;
             await one;
@@ -894,9 +887,9 @@ describe('tests', () => {
       );
     });
 
-    test('return from level-1 nested execute() context should restore level-0 context syncing', async () => {
+    test('return from level-1 nested run() context should restore level-0 context syncing', async () => {
       // Act/Assert
-      const result = await balar.execute(
+      const result = await balar.run(
         [accountId1, accountId2],
         async function getSpendOfAccount(accountId) {
           const account = await registry.getAccountsById(accountId);
@@ -904,8 +897,8 @@ describe('tests', () => {
             return null;
           }
 
-          // Run nested execute() context
-          const spends = await balar.execute(account.budgetIds, (budgetId) =>
+          // Run nested run() context
+          const spends = await balar.run(account.budgetIds, (budgetId) =>
             registry.getBudgetSpends(budgetId),
           );
 
@@ -969,7 +962,7 @@ describe('tests', () => {
     test('bulk fn with extended arglist', async () => {
       // Act
       const budgetIds = [1, 2, 3, 4];
-      const issues = await balar.execute(budgetIds, async (n) => {
+      const issues = await balar.run(budgetIds, async (n) => {
         return n % 2 === 0 ? registry.mul(n, 2) : registry.mul(n, 3);
       });
 
@@ -989,7 +982,7 @@ describe('tests', () => {
     test('extra object arg with default args stringify resolver', async () => {
       // Act
       const budgetIds = [1, 2, 3, 4];
-      const issues = await balar.execute(budgetIds, async (n) => {
+      const issues = await balar.run(budgetIds, async (n) => {
         return n % 2 === 0
           ? registry.mulObj(n, { rhs: 2 })
           : registry.mulObj(n, { rhs: 3 });
@@ -1015,7 +1008,7 @@ describe('tests', () => {
 
       // Act
       const budgetIds = [1, 2, 3];
-      const issues = await balar.execute(budgetIds, async (n) => {
+      const issues = await balar.run(budgetIds, async (n) => {
         const extra = [isEven(n) ? 2 : 3, isEven(n) ? 3 : 2] as const;
         return registry.add3(n, ...extra);
       });
@@ -1041,7 +1034,7 @@ describe('tests', () => {
       });
 
       // Act
-      await balar.execute(
+      await balar.run(
         [1, 2, 3, 4],
         async (n) => {
           await reg.noop(n);

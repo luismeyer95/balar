@@ -20,8 +20,6 @@ export { def, wrap };
  * @example
  *
  * ```ts
- * import { balar } from 'balar';
- *
  * async function getBooks(bookIds: number[]): Promise<Map<number, Book>> { ... }
  * const booksRepository = balar.wrap.fns({
  *   getBook: balar.def(getBooks)
@@ -57,27 +55,28 @@ function fns<R extends Record<string, CheckedRegistryEntry<any, any, any>>>(
 }
 
 /**
- * Given an input object containing bulk methods, creates a wrapper that hooks into the balar execution context to queue and batch calls into efficient bulk operations. Instead of making separate calls for each input, the wrapped methods will collect all inputs and make a single bulk call.
+ * Given an input object containing bulk methods, returns a wrapper that hooks into the balar execution context to queue and batch calls into efficient bulk operations. When a wrapper method is called inside `balar.execute()`, inputs are collected across all executions of the passed function so that a single call to the underlying bulk method is performed.
  *
  * @example
  *
  * ```ts
- * import { balar } from 'balar';
- *
- * class BooksRepository {
- *   async getBooks(bookId: number[]): Promise<Map<number, Book>> { ... }
+ * class AuthorsRepository {
+ *   async getAuthorsById(authorIds: number[]): Promise<Map<number, string>> {
+ *     // Async operation that fetches multiple authors at once
+ *     return new Map([[1, "George Orwell"], [2, "Aldous Huxley"], [3, "Isaac Asimov"]]);
+ *   }
  * }
  *
- * const booksRepository = balar.wrap.object(new BooksRepository())
- *
- * // `getBooks()` is only called once with [1, 2, 3]
- * const bookAuthors = await balar.execute([1, 2, 3], async (bookId: number) => {
- *   const book = await booksRepository.getBook(bookId);
- *   return book?.name;
+ * const wrapper = balar.wrap.object(new AuthorsRepository())
+ * const authors: Map<number, string> = await balar.execute([1, 2, 3], async (authorId) => {
+ *   // This wrapper method is called 3 times, but the underlying method is only called once
+ *   return wrapper.getAuthorsById(authorId);
  * })
+ *
+ * console.log([...bookAuthors.values()]); // ["George Orwell", "Aldous Huxley", "Isaac Asimov"]
  * ```
  *
- * @param classObject An object containing bulk methods.
+ * @param object An object containing bulk methods.
  * @param opts An options object containing `pick` and `exclude` properties to control which bulk methods of the input object should be exposed in the output object.
  * @param {string[]} opts.pick The names of bulk methods to include.
  * @param {string[]} opts.exclude The names of bulk methods to exclude.
@@ -88,8 +87,8 @@ function object<
   O extends Record<string, any>,
   P extends BulkMethods<O> & string = BulkMethods<O> & string,
   E extends BulkMethods<O> & string = never,
->(classObject: O, opts: { pick?: P[]; exclude?: E[] } = {}): ObjectFacade<O, P, E> {
-  const methodNames = getMethodsOfClassObject(classObject);
+>(object: O, opts: { pick?: P[]; exclude?: E[] } = {}): ObjectFacade<O, P, E> {
+  const methodNames = getMethodsOfClassObject(object);
 
   type K = keyof O & string;
   const pickSet = new Set<K>(opts.pick ?? methodNames);
@@ -101,7 +100,7 @@ function object<
 
   const entries: Record<string, BalarFn<unknown, unknown, unknown[]>> = {};
   for (const methodName of apiMethods) {
-    const method = classObject[methodName].bind(classObject);
+    const method = object[methodName].bind(object);
 
     const fn = generateUserExposedFn(methodName, def(method));
     entries[methodName] = fn;
