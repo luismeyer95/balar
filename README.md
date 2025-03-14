@@ -19,35 +19,37 @@ A minimal, self-contained example to show the core concept:
 ```ts
 import { balar } from 'balar';
 
-// Define some bulk read/write functions that manage books in a remote database or service
+// Define some bulk read/write functions that manage books in a remote database
 async function getBooks(bookIds: number[]): Promise<Map<number, Book>> { ... }
 async function saveBooks(books: Book[]): Promise<Map<Book, number>> { ... }
 
-// Wrap these functions into a Balar interface. The resulting object has both bulk and single-item signatures for each method (e.g. has `getBooks(ids: number[])` and `getBooks(id: number)`)
+// Wrap these functions into a Balar interface. The resulting object has both bulk 
+// and single-item signatures for each method (e.g. has `getBooks(ids: number[])` 
+// and `getBooks(id: number)`)
 const booksRepository = balar.wrap.fns({
   getBook: balar.def(getBooks),
   saveBook: balar.def(saveBooks)
 });
 
-// Let's create a function to patch multiple books efficiently!
-async function patchBooks(bookIds: number[]) {
-  return balar.run(booksIds, async (bookId) => {
-    // 📦 Balar queues all calls to `getBook(bookId)` and invokes exactly once the real `getBooks([1, 2, 3])` under the hood
-    const book = await booksRepository.getBook(bookId);
+// Let's patch multiple books efficiently!
+const bookIds = [1, 2, 3];
 
-    // ... Do other async operations, modify book, or return error ...
+const bookNames = await balar.run(booksIds, async function patchOneBook(bookId) {
+  // 📦 Balar queues all calls to `getBook(bookId)` and invokes exactly once
+  // the real `getBooks([1, 2, 3])` under the hood
+  const book = await booksRepository.getBook(bookId);
 
-    // 🧩 Similarly, Balar batches all `saveBook(book)` calls into a single bulk call to the real `saveBooks([book, ...])`
-    await booksRepository.saveBook(book!);
+  // ... Do other async operations, modify book, or return error ...
 
-    // Return any output for each input book ID
-    return { name: book.name };
-  });
-}
+  // 🧩 Similarly, Balar batches all `saveBook(book)` calls into a single
+  // bulk call to the real `saveBooks([book, ...])`
+  await booksRepository.saveBook(book!);
 
+  // Return any result output for each input book ID
+  return { name: book.name };
+});
 
 // Total number of requests to our remote database: 2! 🏆
-const bookNames = await patchBooks([1, 2, 3]);
 
 // Map { 1 => { name: "A" }, 2 => { name: "B" }, 3 => { name: "C" } }
 console.log(bookNames);
