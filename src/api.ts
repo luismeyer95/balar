@@ -17,7 +17,7 @@ export type BalarFn<In, Out, Args extends readonly unknown[]> = BulkFn<In, Out, 
 
 export type RegistryEntry<In, Out, Args extends readonly unknown[]> = {
   fn: BulkFn<In, Out, Args>;
-  getArgsId?: (extraArgs: Args) => string;
+  operationId?: (extraArgs: Args) => string;
 };
 
 export type CheckedRegistryEntry<I, O, Args extends readonly unknown[]> = Required<
@@ -37,7 +37,13 @@ export type BulkInvocation<In, Out> = {
   cachedPromise: Promise<Map<In, Out>> | null;
 };
 
-export type ExecuteOptions = {
+/**
+ * Options for controlling the execution behavior of Balar.
+ *
+ * @property [concurrency] - The maximum number of concurrent executions for the processor function given to `balar.run()`. Defaults to unlimited if not specified.
+ * @property [logger] - An optional function to handle logging messages (for debugging executions only).
+ */
+export type ExecutionOptions = {
   concurrency?: number;
   logger?: (message: string) => void;
 };

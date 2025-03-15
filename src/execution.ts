@@ -1,6 +1,6 @@
 import {
   ProcessorFn,
-  ExecuteOptions,
+  ExecutionOptions,
   BulkOperation,
   CheckedRegistryEntry,
   BulkInvocation,
@@ -11,7 +11,7 @@ import { chunk } from './utils';
 export async function run<In, Out>(
   requests: In[],
   processor: (request: In) => Promise<Out>,
-  opts: ExecuteOptions = {},
+  opts: ExecutionOptions = {},
 ): Promise<Map<In, Out>> {
   const execution = EXECUTION.getStore();
 
@@ -38,7 +38,7 @@ export class BalarExecution<MainIn, MainOut> {
 
   constructor(
     private readonly processor: (request: MainIn) => Promise<MainOut>,
-    opts: ExecuteOptions,
+    opts: ExecutionOptions,
   ) {
     this.processor = processor;
 
@@ -65,7 +65,7 @@ export class BalarExecution<MainIn, MainOut> {
 
     const resultByRequest = new Map<MainIn, MainOut>();
 
-    await EXECUTION.run(this as any /* TODO FIX */, async () => {
+    await EXECUTION.run(this as BalarExecution<unknown, unknown>, async () => {
       for (const requestsBatch of chunk(requests, this.maxConcurrency)) {
         this.logger?.('starting execution for request batch: ', requestsBatch);
 
@@ -233,5 +233,3 @@ export class BalarExecution<MainIn, MainOut> {
     return registryEntry.call!.cachedPromise!;
   }
 }
-
-////////////////////////////////////////

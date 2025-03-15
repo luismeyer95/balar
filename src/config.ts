@@ -10,6 +10,7 @@ import {
 } from './api';
 import { EXECUTION } from './constants';
 import { getMethodsOfClassObject } from './utils';
+import hash from 'object-hash';
 
 const wrap = { fns, object };
 export { def, wrap };
@@ -21,9 +22,7 @@ export { def, wrap };
  *
  * ```ts
  * async function getBooks(bookIds: number[]): Promise<Map<number, Book>> { ... }
- * const booksRepository = balar.wrap.fns({
- *   getBook: balar.def(getBooks)
- * })
+ * const booksRepository = balar.wrap.fns({ getBook: getBooks });
  *
  * // `getBooks()` is only called once with [1, 2, 3]
  * const bookNames = await balar.execute([1, 2, 3], async (bookId: number) => {
@@ -59,7 +58,7 @@ function fns<
 }
 
 /**
- * Given an input object containing bulk methods, returns a wrapper that hooks into the balar execution context to queue and batch calls into efficient bulk operations. When a wrapper method is called inside `balar.execute()`, inputs are collected across all executions of the passed function so that a single call to the underlying bulk method is performed.
+ * Given an input object containing bulk methods, returns a wrapper that hooks into the balar execution context to queue and batch calls into efficient bulk operations. When a wrapper method is called inside `balar.run()`, inputs are collected across all executions of the passed function so that a single call to the underlying bulk method is performed.
  *
  * @example
  *
@@ -94,23 +93,33 @@ function object<
 >(object: O, opts: { pick?: P[]; exclude?: E[] } = {}): ObjectFacade<O, P, E> {
   const methodNames = getMethodsOfClassObject(object);
 
-  type K = keyof O & string;
-  const pickSet = new Set<K>(opts.pick ?? methodNames);
-  const excludeSet = new Set<K>(opts.exclude ?? []);
+  const pickSet = new Set<string>(opts.pick ?? methodNames);
+  const excludeSet = new Set<string>(opts.exclude ?? []);
 
-  const apiMethods = methodNames.filter(
-    (methodName) => pickSet.has(methodName) && !excludeSet.has(methodName),
+  const apiMethods = new Set(
+    methodNames.filter(
+      (methodName) => pickSet.has(methodName) && !excludeSet.has(methodName),
+    ),
   );
 
   const entries: Record<string, BalarFn<unknown, unknown, unknown[]>> = {};
-  for (const methodName of apiMethods) {
-    const method = object[methodName].bind(object);
+  const proxy = new Proxy(object, {
+    get: (target, methodName) => {
+      const prop = target[methodName as string];
+      if (typeof prop !== 'function' || !apiMethods.has(methodName as string)) {
+        return undefined;
+      }
 
-    const fn = generateUserExposedFn(methodName, def(method));
-    entries[methodName] = fn;
-  }
+      entries[methodName as string] ??= generateUserExposedFn(
+        methodName as string,
+        def(prop.bind(target)),
+      );
 
-  return entries as ObjectFacade<O, P, E>;
+      return entries[methodName as string];
+    },
+  });
+
+  return proxy as ObjectFacade<O, P, E>;
 }
 
 function def<I, O, Args extends readonly unknown[]>(
@@ -120,18 +129,16 @@ function def<I, O, Args extends readonly unknown[]>(
 ): CheckedRegistryEntry<Exclude<I, unknown[]>, O, Args> {
   const registryEntry = 'fn' in entry ? entry : { fn: entry };
 
-  const getArgsId =
-    registryEntry.getArgsId ??
+  const operationId =
+    registryEntry.operationId ??
     ((args) => {
       if (!args.length) {
-        // Small optimization for 0 extra args
         return '';
       }
-      // TODO fix: may produce different IDs on objects with different key order
-      return JSON.stringify(args);
+      return hash(args);
     });
 
-  return { ...registryEntry, getArgsId, __brand: 'checked' };
+  return { ...registryEntry, operationId, __brand: 'checked' };
 }
 
 function generateUserExposedFn(
@@ -149,7 +156,7 @@ function generateUserExposedFn(
       throw new Error('balar error: bulk function called outside of a balar execution');
     }
 
-    const argsId = entry.getArgsId(extraArgs);
+    const argsId = entry.operationId(extraArgs);
     const uniqueOperationId = `${uniquePrefix}-${entryName}${argsId}`;
 
     bulkContext.logger?.('executing user scalar fn', uniqueOperationId, 'with', input);

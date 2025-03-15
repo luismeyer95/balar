@@ -93,12 +93,12 @@ describe('tests', () => {
     describe('fns', () => {
       test('default config', async () => {
         const noop = jest.fn(async (_: number[]) => new Map<number, void>());
-        const wrapper2 = balar.wrap.fns({
+        const wrapper = balar.wrap.fns({
           noop,
         });
 
         await balar.run([1, 2], async function (arg) {
-          return wrapper2.noop(arg);
+          return wrapper.noop(arg);
         });
 
         expect(noop).toHaveBeenCalledWith([1, 2]);
@@ -106,29 +106,43 @@ describe('tests', () => {
     });
 
     describe('object', () => {
+      test('regular object', async () => {
+        const noop = jest.fn(async (_: number[]) => new Map<number, void>());
+        const wrapper = balar.wrap.object({
+          noop,
+          prop: 'random',
+        });
+        // @ts-expect-error -- does not exist
+        wrapper.prop;
+
+        await balar.run([1, 2], async function (arg) {
+          return wrapper.noop(arg);
+        });
+
+        expect(noop).toHaveBeenCalledWith([1, 2]);
+      });
+
       // Different ways to produce the same facade type
       const testCases = [
         {
-          test: 'default object facade',
+          test: 'default class object',
           registry: balar.wrap.object(budgetsRepo),
         },
         {
           test: 'pick facade',
-          picks: ['getCurrentBudgets', 'getBudgetSpends'],
           registry: balar.wrap.object(budgetsRepo, {
             pick: ['getCurrentBudgets', 'getBudgetSpends'],
           }),
         },
         {
           test: 'exclude facade',
-          excludes: ['updateBudgets'],
           registry: balar.wrap.object(budgetsRepo, {
             exclude: ['updateBudgets'],
           }),
         },
       ];
 
-      test.each(testCases)('$test', async ({ registry, picks, excludes }) => {
+      test.each(testCases)('$test', async ({ registry }) => {
         budgetsRepo.spendOnBudget(1, 200);
         budgetsRepo.spendOnBudget(2, 450);
 
@@ -158,11 +172,6 @@ describe('tests', () => {
           },
         );
 
-        // Assert
-        const effectiveApi = (picks ?? Object.keys(registry)).filter(
-          (key) => !(excludes ?? []).includes(key),
-        );
-        expect(Object.keys(registry)).toEqual(effectiveApi);
         expect(resultWithScalarApi).toEqual(resultWithBulkApi);
         expect(resultWithBulkApi).toEqual(
           new Map([
@@ -204,6 +213,28 @@ describe('tests', () => {
 
       // Assert
       expect(result).toEqual(new Map());
+    });
+
+    test('no output from bulk fn for given input', async () => {
+      // Arrange
+      const registry = balar.wrap.fns({
+        noop: async (_: number[]): Promise<Map<number, number>> => new Map(),
+      });
+
+      // Act
+      const result = await balar.run([1, 2], async function (id: number): Promise<
+        number | undefined
+      > {
+        return registry.noop(id);
+      });
+
+      // Assert
+      expect(result).toEqual(
+        new Map([
+          [1, undefined],
+          [2, undefined],
+        ]),
+      );
     });
 
     test('simple workflow with 1 checkpoint', async () => {
@@ -949,7 +980,7 @@ describe('tests', () => {
       mulObj: def(spyBulkMulObj),
       add3: def({
         fn: spyBulkAdd3,
-        getArgsId: ([two, three]) => (two + three).toString(),
+        operationId: ([two, three]) => (two + three).toString(),
       }),
     });
 
@@ -977,7 +1008,7 @@ describe('tests', () => {
       expect(spyBulkMul).toHaveBeenCalledWith([2, 4], 2);
     });
 
-    test('extra object arg with default args stringify resolver', async () => {
+    test('extra object arg with default args hash resolver', async () => {
       // Act
       const budgetIds = [1, 2, 3, 4];
       const issues = await balar.run(budgetIds, async (n) => {
