@@ -21,7 +21,7 @@
     "test": "jest --verbose",
     "build": "tsup src/index.ts --format cjs,esm --dts --clean",
     "watch": "npm run build -- --watch src",
-    "prepublishOnly": "npm run build"
+    "prepublishOnly": "npm run test && npm run build"
   },
   "devDependencies": {
     "@types/jest": "^29.5.14",

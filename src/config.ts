@@ -93,33 +93,23 @@ function object<
 >(object: O, opts: { pick?: P[]; exclude?: E[] } = {}): ObjectFacade<O, P, E> {
   const methodNames = getMethodsOfClassObject(object);
 
-  const pickSet = new Set<string>(opts.pick ?? methodNames);
-  const excludeSet = new Set<string>(opts.exclude ?? []);
+  type K = keyof O & string;
+  const pickSet = new Set<K>(opts.pick ?? methodNames);
+  const excludeSet = new Set<K>(opts.exclude ?? []);
 
-  const apiMethods = new Set(
-    methodNames.filter(
-      (methodName) => pickSet.has(methodName) && !excludeSet.has(methodName),
-    ),
+  const apiMethods = methodNames.filter(
+    (methodName) => pickSet.has(methodName) && !excludeSet.has(methodName),
   );
 
   const entries: Record<string, BalarFn<unknown, unknown, unknown[]>> = {};
-  const proxy = new Proxy(object, {
-    get: (target, methodName) => {
-      const prop = target[methodName as string];
-      if (typeof prop !== 'function' || !apiMethods.has(methodName as string)) {
-        return undefined;
-      }
+  for (const methodName of apiMethods) {
+    const method = object[methodName].bind(object);
 
-      entries[methodName as string] ??= generateUserExposedFn(
-        methodName as string,
-        def(prop.bind(target)),
-      );
+    const fn = generateUserExposedFn(methodName, def(method));
+    entries[methodName] = fn;
+  }
 
-      return entries[methodName as string];
-    },
-  });
-
-  return proxy as ObjectFacade<O, P, E>;
+  return entries as ObjectFacade<O, P, E>;
 }
 
 function def<I, O, Args extends readonly unknown[]>(
