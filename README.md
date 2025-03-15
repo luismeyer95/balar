@@ -22,13 +22,12 @@ However, some simple logic to process one item can become quite complex when sca
 
 Balar allows you to write asynchronous bulk processing code that <em>looks</em> like it handles one item at a time in complete isolation, but without compromising on the efficiency of outbound asynchronous requests. Effectively, you describe how to handle one item, and Balar ensures that the underlying execution is as efficient as hand-written bulk processing code.
 
-
 ## Short Example
 
 ```ts
 import { balar } from 'balar';
 
-// Suppose we have a remote API for managing a greenhouse that we interact with 
+// Suppose we have a remote API for managing a greenhouse that we interact with
 // through this service
 class GreenhouseService {
   async getPlants(plantIds: number[]): Promise<Map<number, Plant>> { ... }
@@ -38,7 +37,7 @@ class GreenhouseService {
 // Wrap the service object with Balar
 const wrapper = balar.wrap.object(new GreenhouseService());
 
-// You can also wrap standalone functions like this 
+// You can also wrap standalone functions like this
 // const wrapper = balar.wrap.fns({ getPlants, waterPlants });
 
 // Let's water multiple plants at once
@@ -65,7 +64,6 @@ console.log(results);
 ```
 
 ---
-
 
 ## Long Example
 
@@ -175,7 +173,7 @@ class BudgetsRepository {
   ): Promise<Map<BudgetUpdateRequest, boolean>> { ... }
 }
 
-// The repository is wrapped in a Balar object. The Balar object only exposes the 
+// The repository is wrapped in a Balar object. The Balar object only exposes the
 // methods that match the above "bulk signature", adding an overload for each of
 // the methods so they can also be called with a single item. Precisely, for every
 // `(i: I[]) => Map<I, O>` method in the object, a `(i: I) => O` overload is added.
@@ -212,10 +210,51 @@ Essentially, Balar provides a clean scalar-like API to queue inputs to bulk func
 
 ## Core features
 
-- Flexible type API: provide any operation that match Balar’s bulk function contract and get back the fine-grained types that match your needs.
-- Bulk processing: describe how you would handle a single item and Balar takes care of executing your plan with bulk processing efficiency.
-- Tracing logs: transparency is key, plug the logger of your choice to debug or observe Balar executions.
+- **Flexible type API**: provide any operation that match Balar’s bulk function contract and get back the fine-grained interfaces that match your needs.
+- **Bulk processing**: describe how you would handle a single item and Balar takes care of executing your plan with bulk processing efficiency.
+- **Tracing logs**: transparency is key, plug the logger of your choice to debug or observe Balar executions.
 
-### Non-goals: everything else
+## ❓ FAQ
+
+### How does Balar ensure only one bulk call is made?
+
+Balar automatically batches function calls across all executions of the `balar.run()` handler. Even if you call `getBooks()` multiple times from the wrapper, Balar will only perform **one bulk call to `getBooks()`** under the hood. It does this by leveraging deferred promises and the `AsyncLocalStorage` API to track execution context.
+
+### Can I use Balar-wrapped functions as drop-in replacements for the original functions?
+
+No. At this time, using a Balar-wrapped function or object outside of a `balar.run()` execution context will result in an exception being thrown. While it forces consumers into creating a `balar` execution context for any code using wrappers, it also makes said code more predictable because you don't have to ask yourself whether it will synchronize/batch or not (it always will).
+
+### What if I run nested `balar.run()` calls ?
+
+Balar will automatically understand how to handle operations within nested `balar.run()` calls.
+
+```ts
+await balar.run([1, 2], async (n) => {
+  await balar.run([n, n + 10], async () => {
+    // Will wait to collect all 4 inputs ([1, 11, 2, 12]) before executing
+    // the underlying bulk operation
+    await wrapper.bulkOp(n);
+  });
+});
+```
+
+### Which signatures are accepted for bulk functions?
+
+At this time, you can only provide the following signature:
+
+```ts
+type BulkFn<In, Out, Args extends readonly unknown[]> = (
+  request: In[],
+  ...args: Args
+) => Promise<Map<In, Out>>;
+```
+
+This is because it's easy to derive a single-item version of this function signature (returning an array of `Out` would be ambiguous in how to map output to input in case there is a missing element).
+
+### Is it type-safe?
+
+Absolutely. The library uses generics extensively to provide precise and type-safe interfaces.
+
+## Non-goals: everything else
 
 By design, Balar concerns itself with only 3 things: gathering inputs for bulk operations, executing them, and being transparent about how it does it. With how “intrusive” the abstractions of this library are, I wouldn't want you to have to trust it with more than strictly necessary. Any other feature (caching, timeouts, retries…) are out of scope and can be handled by other means in your application code instead. Balar only provides an alternative way to write bulk processing code.
