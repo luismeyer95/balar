@@ -90,21 +90,19 @@ describe('tests', () => {
       expect(mock).toHaveBeenCalledWith([1, 2]);
     });
 
-    test('array as scalar not supported', async () => {
-      const mock = jest.fn(async (_: number[][]) => new Map<number[], boolean>());
-      const registry = balar.wrap.fns({
-        // @ts-expect-error
-        takesArrayScalar: def(mock),
-      });
+    describe('fns', () => {
+      test('default config', async () => {
+        const noop = jest.fn(async (_: number[]) => new Map<number, void>());
+        const wrapper2 = balar.wrap.fns({
+          noop,
+        });
 
-      await balar.run([1, 2], async function (args: number) {
-        return await registry.takesArrayScalar([args]);
-      });
+        await balar.run([1, 2], async function (arg) {
+          return wrapper2.noop(arg);
+        });
 
-      // Result is unexpectedly a 1-level deep array as the runtime resolved
-      // signature was bulk (can't easily disambiguate between scalar and bulk
-      // calls for array types).
-      expect(mock).toHaveBeenCalledWith([1, 2]);
+        expect(noop).toHaveBeenCalledWith([1, 2]);
+      });
     });
 
     describe('object', () => {

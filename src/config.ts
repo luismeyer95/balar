@@ -36,9 +36,9 @@ export { def, wrap };
  *
  * @returns An object containing balar functions ready for use in balar execution contexts.
  */
-function fns<R extends Record<string, CheckedRegistryEntry<any, any, any>>>(
-  bulkFunctions: R,
-): Facade<R> {
+function fns<
+  R extends Record<string, BulkFn<any, any, any> | CheckedRegistryEntry<any, any, any>>,
+>(bulkFunctions: R): Facade<R> {
   // Creates handlers from bulk functions. Those are the user-exposed functions which are
   // not aware of any execution context. They delegate execution to the context-aware handlers
   // taken from the balar execution stored in async context.
@@ -46,7 +46,11 @@ function fns<R extends Record<string, CheckedRegistryEntry<any, any, any>>>(
 
   for (const entryName of Object.keys(bulkFunctions)) {
     const entry = bulkFunctions[entryName];
-    const fn = generateUserExposedFn(entryName, entry);
+
+    const fn = generateUserExposedFn(
+      entryName,
+      'fn' in entry ? entry : def({ fn: entry }),
+    );
 
     scalarHandlers[entryName as keyof R] = fn as Facade<R>[keyof R];
   }

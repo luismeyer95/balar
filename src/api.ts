@@ -75,6 +75,8 @@ export type ObjectFacade<
 /**
  * Takes a registry and converts it to a record of hybrid scalar/bulk functions.
  */
-export type Facade<R extends Record<string, RegistryEntry<any, any, any>>> = {
-  [K in keyof R]: BalarizeFn<R[K]['fn']>;
+export type Facade<
+  R extends Record<string, BulkFn<any, any, any> | RegistryEntry<any, any, any>>,
+> = {
+  [K in keyof R]: R[K] extends { fn: any } ? BalarizeFn<R[K]['fn']> : BalarizeFn<R[K]>;
 };
