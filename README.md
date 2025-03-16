@@ -12,17 +12,7 @@ npm install balar
 
 ---
 
-## Introduction
-
-When it comes to asynchronous bulk processing, Balar gives you the best of both worlds: the simplicity of single-item processing logic with the performance of bulk operations.
-
-Networking is often a bottleneck in modern web applications. Cloud technology has made it easy to scale up processing power, RAM, or storage, but each networking call still needs to negotiate a complicated and unreliable global network of computers, routers, switches, and protocols adding a lot of overhead. Therefore to minimize time spent in code that processes items in bulk, it's usually better to make fewer requests with more data as opposed to making more requests with less data.
-
-However, some simple logic to process one item can become quite complex when scaled to multiple items in a way that batches outbound requests to minimize network calls. You suddenly have to handle "diverging states" at each step of your processing (e.g. some items may pass this validation check, but others may not and should be filtered out for the next step), or need to link outputs to inputs for error handling, etc.
-
-Balar allows you to write asynchronous bulk processing code that <em>looks</em> like it handles one item at a time in complete isolation, but without compromising on the efficiency of outbound asynchronous requests. Effectively, you describe how to handle one item, and Balar ensures that the underlying execution is as efficient as hand-written bulk processing code.
-
-## Short Example
+## Quick Start
 
 ```ts
 import { balar } from 'balar';
@@ -62,6 +52,26 @@ const results = await balar.run(plantIds, async function waterPlant(plantId) {
 // Map { 1 => { name: "Fern", wateredAt: ... }, 2 => { name: "Cactus", wateredAt: ... }, ... }
 console.log(results);
 ```
+
+---
+
+## Usage examples
+
+- [Balar for NestJS](https://replit.com/@luismeyer95/BalarGreenhouse-NestJS#src/app.controller.ts)
+
+---
+
+
+## Introduction
+
+When it comes to asynchronous bulk processing, Balar gives you the best of both worlds: the simplicity of single-item processing logic with the performance of bulk operations.
+
+Networking is often a bottleneck in modern web applications. Cloud technology has made it easy to scale up processing power, RAM, or storage, but each networking call still needs to negotiate a complicated and unreliable global network of computers, routers, switches, and protocols adding a lot of overhead. Therefore to minimize time spent in code that processes items in bulk, it's usually better to make fewer requests with more data as opposed to making more requests with less data.
+
+However, some simple logic to process one item can become quite complex when scaled to multiple items in a way that batches outbound requests to minimize network calls. You suddenly have to handle "diverging states" at each step of your processing (e.g. some items may pass this validation check, but others may not and should be filtered out for the next step), or need to link outputs to inputs for error handling, etc.
+
+Balar allows you to write asynchronous bulk processing code that <em>looks</em> like it handles one item at a time in complete isolation, but without compromising on the efficiency of outbound asynchronous requests. Effectively, you describe how to handle one item, and Balar ensures that the underlying execution is as efficient as hand-written bulk processing code.
+
 
 ---
 
