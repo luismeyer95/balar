@@ -1,10 +1,12 @@
 import { run } from './execution';
-import { def, wrap } from './config';
+import { fns, object } from './config';
 
-export { ExecutionOptions, BulkFn, RegistryEntry } from './api';
+export { ExecutionOptions, BalarFn } from './api';
 
 export const balar = {
-  def,
-  wrap,
+  wrap: {
+    fns,
+    object,
+  },
   run,
 };

@@ -1,5 +1,4 @@
 import { balar } from '../src';
-import { def } from '../src/config';
 import {
   Account,
   AccountsRepository,
@@ -25,16 +24,15 @@ describe('tests', () => {
   function createDefaultRegistry() {
     return balar.wrap.fns({
       // Register your bulk API dependencies
-      getAccountsById: def(spyGetAccountsById as typeof accountsRepo.getAccountsById),
-      getCurrentBudgets: def(
-        spyGetCurrentBudgets as typeof budgetsRepo.getCurrentBudgets,
-      ),
-      updateBudgets: def(spyUpdateBudgets as typeof budgetsRepo.updateBudgets),
-      getBudgetSpends: def(spyGetBudgetSpends as typeof budgetsRepo.getBudgetSpends),
-      linkAccountToBudgets: def({
-        fn: spyLinkBudgetsToAccount as typeof accountsRepo.linkAccountToBudgets,
-      }),
-      inspect: def(spyInspect as (...args: any[]) => Promise<Map<any, void>>),
+      getAccountsById: spyGetAccountsById as typeof accountsRepo.getAccountsById,
+      getCurrentBudgets: spyGetCurrentBudgets as typeof budgetsRepo.getCurrentBudgets,
+      updateBudgets: spyUpdateBudgets as typeof budgetsRepo.updateBudgets,
+      getBudgetSpends: spyGetBudgetSpends as typeof budgetsRepo.getBudgetSpends,
+      linkAccountToBudgets:
+        spyLinkBudgetsToAccount as typeof accountsRepo.linkAccountToBudgets,
+      inspect: spyInspect as any as <T>(args: T[]) => Promise<Map<T, void>>,
+      // @ts-expect-error
+      inspect2: spyInspect as (args: any[]) => Promise<Map<any, void>>,
     });
   }
 
@@ -77,10 +75,13 @@ describe('tests', () => {
       const mock = jest.fn(async (_: number[][]) => new Map<number[], boolean>());
       const registry = balar.wrap.fns({
         // @ts-expect-error
-        takesArrayScalar: def(mock),
+        takesArrayScalar: mock,
+        // @ts-expect-error
+        alsoErrors: async (_: number[][]) => new Map<number[], boolean>(),
       });
 
       await balar.run([1, 2], async function (args: number) {
+        // @ts-expect-error
         return await registry.takesArrayScalar([args]);
       });
 
@@ -120,6 +121,39 @@ describe('tests', () => {
         });
 
         expect(noop).toHaveBeenCalledWith([1, 2]);
+      });
+
+      test('class object (owned + inherited methods)', async () => {
+        class Base {
+          async base(_: number[]) {
+            return new Map(_.map((x) => [x, x]));
+          }
+        }
+
+        class Derived extends Base {
+          async derived(_: number[]) {
+            return new Map(_.map((x) => [x, x]));
+          }
+
+          async takesArrayInput(_: number[][]) {
+            return new Map<number[], void>();
+          }
+        }
+
+        const wrapper = balar.wrap.object(new Derived());
+        // @ts-expect-error -- the bulk function input type is an array
+        wrapper.takesArrayInput;
+
+        const results = await balar.run([1, 2], async function (arg) {
+          return wrapper.base(arg).then((arg) => wrapper.derived(arg!));
+        });
+
+        expect(results).toEqual(
+          new Map([
+            [1, 1],
+            [2, 2],
+          ]),
+        );
       });
 
       // Different ways to produce the same facade type
@@ -371,7 +405,7 @@ describe('tests', () => {
 
       const spyBulkMul = jest.fn(bulkMul);
       const registry = balar.wrap.fns({
-        mul: def(spyBulkMul),
+        mul: spyBulkMul,
       });
 
       // Act
@@ -561,8 +595,8 @@ describe('tests', () => {
       const noopMock1 = jest.fn(noop);
       const noopMock2 = jest.fn(noop);
       const registry = balar.wrap.fns({
-        noop1: def(noopMock1),
-        noop2: def(noopMock2),
+        noop1: noopMock1,
+        noop2: noopMock2,
       });
 
       // Act
@@ -657,7 +691,7 @@ describe('tests', () => {
       });
 
       const registry = balar.wrap.fns({
-        mayThrow: def(mayThrow),
+        mayThrow: mayThrow,
       });
 
       // Act
@@ -684,8 +718,8 @@ describe('tests', () => {
       const noopOdd = jest.fn(noop);
 
       const registry = balar.wrap.fns({
-        noopEven: def(noopEven),
-        noopOdd: def(noopOdd),
+        noopEven: noopEven,
+        noopOdd: noopOdd,
       });
 
       // Act
@@ -723,7 +757,7 @@ describe('tests', () => {
       const noopMock = jest.fn(noop);
 
       const registry = balar.wrap.fns({
-        noop: def(noopMock),
+        noop: noopMock,
       });
 
       // Act
@@ -767,8 +801,8 @@ describe('tests', () => {
       const spyGt = jest.fn(gt);
 
       const registry = balar.wrap.fns({
-        lt: def(spyLt),
-        gt: def(spyGt),
+        lt: spyLt,
+        gt: spyGt,
       });
 
       // Act
@@ -860,8 +894,8 @@ describe('tests', () => {
       // Arrange
       const noop2 = jest.fn(async (arr: number[]) => new Map(arr.map((id) => [id, id])));
       const registry = balar.wrap.fns({
-        noop1: def(async (arr: number[]) => new Map(arr.map((id) => [id, id]))),
-        noop2: def(noop2),
+        noop1: async (arr: number[]) => new Map(arr.map((id) => [id, id])),
+        noop2: noop2,
       });
 
       // Act
@@ -976,12 +1010,9 @@ describe('tests', () => {
     const spyBulkAdd3 = jest.fn(bulkAdd3);
 
     const registry = balar.wrap.fns({
-      mul: def(spyBulkMul),
-      mulObj: def(spyBulkMulObj),
-      add3: def({
-        fn: spyBulkAdd3,
-        operationId: ([two, three]) => (two + three).toString(),
-      }),
+      mul: spyBulkMul,
+      mulObj: spyBulkMulObj,
+      add3: spyBulkAdd3,
     });
 
     beforeEach(() => {
@@ -1029,29 +1060,6 @@ describe('tests', () => {
       expect(spyBulkMulObj).toHaveBeenCalledWith([1, 3], { rhs: 3 });
       expect(spyBulkMulObj).toHaveBeenCalledWith([2, 4], { rhs: 2 });
     });
-
-    test('extra object arg with custom args id resolver', async () => {
-      function isEven(n: number) {
-        return n % 2 === 0;
-      }
-
-      // Act
-      const budgetIds = [1, 2, 3];
-      const issues = await balar.run(budgetIds, async (n) => {
-        const extra = [isEven(n) ? 2 : 3, isEven(n) ? 3 : 2] as const;
-        return registry.add3(n, ...extra);
-      });
-
-      // Assert
-      const expected = new Map([
-        [1, 6],
-        [2, 7],
-        [3, 8],
-      ]);
-      expect(issues).toEqual(expected);
-      expect(spyBulkAdd3).toHaveBeenCalledTimes(1);
-      expect(spyBulkAdd3).toHaveBeenCalledWith([1, 2, 3], 3, 2);
-    });
   });
 
   describe('concurrency', () => {
@@ -1059,7 +1067,7 @@ describe('tests', () => {
       // Arrange
       const mock = jest.fn(async (n: number[]) => new Map(n.map((id) => [id, id])));
       const reg = balar.wrap.fns({
-        noop: def(mock),
+        noop: mock,
       });
 
       // Act

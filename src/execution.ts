@@ -2,24 +2,73 @@ import {
   ProcessorFn,
   ExecutionOptions,
   BulkOperation,
-  CheckedRegistryEntry,
   BulkInvocation,
+  RegistryEntry,
 } from './api';
 import { EXECUTION, PROCESSOR_ID } from './constants';
 import { chunk } from './utils';
 
+/**
+ * Processes a batch of inputs using the provided processor function and returns the results keyed by input. When a wrapped bulk function (obtained via `balar.wrap.fns()` or `balar.wrap.object()`) is called inside `balar.run()`, inputs are collected across all executions of the processor function so that only a single call to the underlying bulk function is performed.
+ *
+ * @param inputs - The array of inputs to process.
+ * @param processor - An asynchronous function that processes each individual input.
+ * @param opts - Optional execution options (e.g., concurrency control, logger).
+ * @returns A `Promise` resolving to a `Map` that associates each input request with its corresponding output.
+ *
+ * @example
+ *
+ * ```ts
+ * import { balar } from 'balar';
+ *
+ * // Suppose we have a remote API for managing a greenhouse that we interact with
+ * // through this service
+ * class GreenhouseService {
+ *   async getPlants(plantIds: number[]): Promise<Map<number, Plant>> { ... }
+ *   async waterPlants(plants: Plant[]): Promise<Map<Plant, Date>> { ... }
+ * }
+ *
+ * // Wrap the service object with Balar
+ * const wrapper = balar.wrap.object(new GreenhouseService());
+ *
+ * // You can also wrap standalone functions like this
+ * // const wrapper = balar.wrap.fns({ getPlants, waterPlants });
+ *
+ * // Let's water multiple plants at once
+ * const plantIds = [1, 2, 3]; // 🌿 🌵 🌱
+ *
+ * // This code reads like plants are being watered in sequence, but...
+ * const results = await balar.run(plantIds, async function waterPlant(plantId) {
+ *   // Balar queues all calls to `wrapper.getPlants(plantId)` and invokes
+ *   // the real `getPlants([1, 2, 3])` exactly once under the hood
+ *   const plant = await wrapper.getPlants(plantId);
+ *
+ *   // ... Do other sync/async operations, return error, anything goes ...
+ *
+ *   // Similarly, the real `waterPlants([plant, ...])` is called exactly once
+ *   const wateredAt = await wrapper.waterPlants(plant!);
+ *
+ *   return { name: plant!.name, wateredAt };
+ * });
+ *
+ * // Total number of requests to our remote API: 2! ✔️
+ *
+ * // Map { 1 => { name: "Fern", wateredAt: ... }, 2 => { name: "Cactus", wateredAt: ... }, ... }
+ * console.log(results);
+ * ```
+ */
 export async function run<In, Out>(
-  requests: In[],
+  inputs: In[],
   processor: (request: In) => Promise<Out>,
   opts: ExecutionOptions = {},
 ): Promise<Map<In, Out>> {
   const execution = EXECUTION.getStore();
 
   if (!execution) {
-    return new BalarExecution(processor, opts).run(requests);
+    return new BalarExecution(processor, opts).run(inputs);
   }
 
-  return execution.runNested(requests, processor);
+  return execution.runNested(inputs, processor);
 }
 
 export class BalarExecution<MainIn, MainOut> {
@@ -189,7 +238,7 @@ export class BalarExecution<MainIn, MainOut> {
 
   callBulkHandler(
     operationId: string,
-    config: CheckedRegistryEntry<unknown, unknown, unknown[]>,
+    config: RegistryEntry<unknown, unknown, unknown[]>,
     inputs: unknown[],
     extraArgs: unknown[],
   ) {

@@ -7,6 +7,23 @@ export type BulkFn<In, Out, Args extends readonly unknown[]> = (
   ...args: Args
 ) => Promise<Map<In, Out>>;
 
+export type IsBulkFn<Fn> = Fn extends (
+  r: Array<infer In>,
+  ...args: infer _Args
+) => Promise<Map<infer In, infer _Out>>
+  ? In extends unknown[]
+    ? false
+    : true
+  : false;
+
+export type AssertBulkRecord<R extends Record<string, any>> = {
+  [K in keyof R]: IsBulkFn<R[K]> extends true ? R[K] : never;
+};
+
+export type BulkRecord<R extends Record<string, any>> = {
+  [K in keyof R as IsBulkFn<R[K]> extends true ? K : never]: R[K];
+};
+
 export type ScalarFn<In, Out, Args extends readonly unknown[]> = (
   request: In,
   ...args: Args
@@ -17,7 +34,6 @@ export type BalarFn<In, Out, Args extends readonly unknown[]> = BulkFn<In, Out, 
 
 export type RegistryEntry<In, Out, Args extends readonly unknown[]> = {
   fn: BulkFn<In, Out, Args>;
-  operationId?: (extraArgs: Args) => string;
 };
 
 export type CheckedRegistryEntry<I, O, Args extends readonly unknown[]> = Required<
@@ -59,7 +75,7 @@ type BalarizeFn<F> = F extends (
   : never;
 
 export type BulkMethods<O extends Record<string, any>> = ValueTypes<{
-  [K in keyof O as O[K] extends BulkFn<any, any, any> ? K : never]: K;
+  [K in keyof O as IsBulkFn<O[K]> extends true ? K : never]: K;
 }>;
 
 /**
@@ -71,7 +87,7 @@ export type ObjectFacade<
   P extends keyof O & string = BulkMethods<O> & string,
   E extends keyof O & string = never,
 > = {
-  [K in keyof O as O[K] extends BulkFn<any, any, any>
+  [K in keyof O as IsBulkFn<O[K]> extends true
     ? K extends UnionPickAndExclude<keyof O, P, E>
       ? K
       : never
@@ -81,8 +97,6 @@ export type ObjectFacade<
 /**
  * Takes a registry and converts it to a record of hybrid scalar/bulk functions.
  */
-export type Facade<
-  R extends Record<string, BulkFn<any, any, any> | RegistryEntry<any, any, any>>,
-> = {
-  [K in keyof R]: R[K] extends { fn: any } ? BalarizeFn<R[K]['fn']> : BalarizeFn<R[K]>;
+export type Facade<R extends Record<string, any>> = {
+  [K in keyof R as IsBulkFn<R[K]> extends true ? K : never]: BalarizeFn<R[K]>;
 };
