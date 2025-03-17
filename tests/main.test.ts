@@ -104,6 +104,16 @@ describe('tests', () => {
 
         expect(noop).toHaveBeenCalledWith([1, 2]);
       });
+
+      test('throws inside context', async () => {
+        const throwingCall = async () => {
+          await balar.run([1], async function () {
+            balar.wrap.fns({});
+          });
+        };
+
+        await expect(throwingCall()).rejects.toThrow();
+      });
     });
 
     describe('object', () => {
@@ -121,6 +131,16 @@ describe('tests', () => {
         });
 
         expect(noop).toHaveBeenCalledWith([1, 2]);
+      });
+
+      test('throws inside context', async () => {
+        const throwingCall = async () => {
+          await balar.run([1], async function () {
+            balar.wrap.object({});
+          });
+        };
+
+        await expect(throwingCall()).rejects.toThrow();
       });
 
       test('class object (owned + inherited methods)', async () => {
@@ -219,7 +239,7 @@ describe('tests', () => {
 
   describe('basic tests', () => {
     test('executing scalar function outside bulk exec should fail', async () => {
-      await expect(registry.getCurrentBudgets(1)).rejects.toThrowError();
+      await expect(registry.getCurrentBudgets(1)).rejects.toThrow();
     });
 
     test('no op processor', async () => {

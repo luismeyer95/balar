@@ -35,6 +35,12 @@ import hash from 'object-hash';
 export function fns<R extends Record<string, any>>(
   bulkFunctions: AssertBulkRecord<R>,
 ): Facade<R> {
+  if (EXECUTION.getStore()) {
+    throw new Error(
+      'balar error: unexpected call to `balar.wrap.fns()` inside a balar execution context, please define your balar wrapper in advance and share it across processor function executions to produce the intended behaviour.',
+    );
+  }
+
   // Creates handlers from bulk functions. Those are the user-exposed functions which are
   // not aware of any execution context. They delegate execution to the context-aware handlers
   // taken from the balar execution stored in async context.
@@ -89,6 +95,12 @@ export function object<
   P extends BulkMethods<O> & string = BulkMethods<O> & string,
   E extends BulkMethods<O> & string = never,
 >(object: O, opts: { pick?: P[]; exclude?: E[] } = {}): ObjectFacade<O, P, E> {
+  if (EXECUTION.getStore()) {
+    throw new Error(
+      'balar error: unexpected call to `balar.wrap.object()` inside a balar execution context, please define your balar wrapper in advance and share it across processor function executions to produce the intended behaviour.',
+    );
+  }
+
   const methodNames = getMethodsOfClassObject(object);
 
   type K = keyof O & string;
@@ -128,7 +140,11 @@ function generateUserExposedFn(
     const argsId = extraArgs.length ? hash(extraArgs).slice(0, 6) : '';
     const uniqueOperationId = `${uniquePrefix}-${entryName}${argsId}`;
 
-    bulkContext.logger?.(`queueing input ${input} for operation ${uniqueOperationId}`);
+    if (bulkContext.logger) {
+      bulkContext.logger(
+        `queueing input ${JSON.stringify(input)} for operation ${uniqueOperationId}`,
+      );
+    }
 
     const inputs = Array.isArray(input) ? input : [input];
 
