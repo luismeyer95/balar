@@ -1,6 +1,6 @@
 {
   "name": "balar",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Write scalar logic for bulk processing workflows.",
   "author": "Luis Meyer",
   "license": "MIT",
