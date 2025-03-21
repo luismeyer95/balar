@@ -1,6 +1,6 @@
 # Balar
 
-Efficient bulk processing made simpler, for Typescript + Node.js.
+Describe a plan to process one item, let it automatically scale to handle more. Efficient bulk async processing made simpler for Typescript + Node.js.
 
 ---
 
@@ -22,26 +22,22 @@ pnpm add balar          # pnpm
 ```ts
 import { balar } from 'balar';
 
-// Suppose we have a remote API for managing a greenhouse that we interact with
-// through this service
+// Suppose we have a remote API for managing a greenhouse,
+// it exposes bulk operations to get or water plants
 class GreenhouseService {
   async getPlants(plantIds: number[]): Promise<Map<number, Plant>> { ... }
   async waterPlants(plants: Plant[]): Promise<Map<Plant, Date>> { ... }
 }
 
-// Wrap the service object with Balar
-const wrapper = balar.wrap.object(new GreenhouseService());
-
-// You can also wrap standalone functions like this
-// const wrapper = balar.wrap.fns({ getPlants, waterPlants });
-
-// Let's water multiple plants at once
+// Let's get these plants and water them while minimizing 
+// the number of requests to our API
 const plantIds = [1, 2, 3]; // 🌿 🌵 🌱
 
-// This code reads like plants are being watered in sequence, but...
+const wrapper = balar.wrap.object(new GreenhouseService());
+
 const results = await balar.run(plantIds, async function waterPlant(plantId) {
-  // Balar queues all calls to `wrapper.getPlants(plantId)` and invokes
-  // the real `getPlants([1, 2, 3])` exactly once under the hood
+  // Balar collects all inputs given to `wrapper.getPlants(plantId)` 
+  // and invokes the real `getPlants([1, 2, 3])` exactly once under the hood
   const plant = await wrapper.getPlants(plantId);
 
   // ... Do other sync/async operations, return error, anything goes ...
@@ -52,19 +48,22 @@ const results = await balar.run(plantIds, async function waterPlant(plantId) {
   return { name: plant!.name, wateredAt };
 });
 
-// Total number of requests to our remote API: 2! ✔️
+// We described how to handle 1 plant, Balar scaled it to 3 plants efficiently
+// Total number of requests to our remote API: 2 ✅
 
-// Map { 1 => { name: "Fern", wateredAt: ... }, 2 => { name: "Cactus", wateredAt: ... }, ... }
 console.log(results);
+// Map { 
+//   1 => { name: "Fern", wateredAt: ... },
+//   2 => { name: "Cactus", wateredAt: ... },
+//   3 => { name: "Tulip", wateredAt: ... },
+// }
 ```
 
 ### Core Features
 
-- **Simplified bulk processing**: Describe how to process a single item and Balar takes care of executing your plan for multiple items with bulk processing efficiency.
-- **Type-safe API**: Provide any operation that match Balar’s bulk function contract and get back the fine-grained interfaces that match your needs.
+- **Automatic batching**: Write async logic to process a single item and let Balar scale it efficiently to handle more without increasing the number of outbound requests.
 - **Flexibility**: Put any asynchronous operation behind your bulk functions, be it API calls, database queries, etc.
 - **Transparency**: Plug the logger of your choice to debug or observe Balar executions.
-
 
 ### Runnable Demos
 
@@ -80,10 +79,9 @@ When it comes to asynchronous bulk processing, Balar gives you the best of both 
 
 Networking is often a bottleneck in modern web applications. Cloud technology has made it easy to scale up processing power, RAM, or storage, but each networking call still needs to negotiate a complicated and unreliable global network of computers, routers, switches, and protocols adding a lot of overhead. Therefore to minimize time spent in code that processes items in bulk, it's usually better to make fewer requests with more data as opposed to making more requests with less data.
 
-However, some simple logic to process one item can become quite complex when scaled to multiple items in a way that batches outbound requests to minimize network calls. You suddenly have to handle "diverging states" at each step of your processing (e.g. some items may pass a validation check, but others may not and should be filtered out for the next step), or need to link outputs to inputs for error handling, etc.
+However, some simple logic to process one item can become quite complex when scaled to multiple items in a way that batches outbound requests to minimize network calls. You suddenly have to handle "diverging states" at each step of your processing (e.g. some items may pass a validation check, but others may not and should be filtered out for the next step). The core logic can easily get buried under batching concerns, reducing the expressiveness of your code.
 
 Balar allows you to write asynchronous bulk processing code that <em>looks</em> like it handles one item at a time in complete isolation, but without compromising on the efficiency of outbound asynchronous requests. Effectively, you describe how to handle one item, and Balar ensures that the underlying execution is as efficient as hand-written bulk processing code.
-
 
 <details>
 <summary><h2 style="display: inline-block;">Full Example</h2></summary>
@@ -225,22 +223,24 @@ async function updateBudgetsWithValidation(
 
 This code is equivalent to the previous example doing manual batching. It may look like it runs 2 network calls per request, but it only runs 2 network calls in total regardless of the number of requests.
 
-Essentially, Balar provides a clean scalar-like API to queue inputs to bulk functions of your choice and execute them in one batch. No manual batching, no managing parallel states; just clean, focused scalar logic with bulk efficiency!
+Essentially, Balar provides a clean API to queue inputs to bulk functions of your choice and execute them in one batch. No manual batching, no managing parallel states; just clean, focused scalar logic with bulk efficiency!
 
 </details>
 
 ## ⚙️ How it works
 
-The Balar executor calls the processor function provided to `balar.run()` for each input immediately, then tracks and controls the progress of each call. The concurrent execution of these calls is divided into steps, each new step being the result of a “checkpoint event”.
+In short, the processor function is executed concurrently for all inputs, but all executions "join" at synchronization checkpoints (Balar-wrapped function call sites) to allow the aggregation of inputs into batches before execution. Internally, the context tracking and synchronization is done by leveraging `AsyncLocalStorage` and deferred promises. 
 
-Whenever any given execution of the processor function hits a call to a Balar function, it forwards some input(s) to execute within a bulk operation and registers itself as “awaiting a checkpoint”. This particular execution is on hold until the checkpoint resolves, and this checkpoint resolves once all the other executions have either:
+When you call `balar.run(inputs, inputProcessorFn)`, the processor function is called for each input immediately. Balar then tracks and controls the progress of each call. The concurrent execution of these calls is divided into steps, each new step being the result of a “synchronization event”.
 
-- Called a Balar function themselves
+Whenever any given execution of the processor function hits a call to a Balar-wrapped function, the provided input(s) are stored internally and the execution is put on hold until a "sync event" happens. The sync event happens once all the other executions have either:
+
+- Called a Balar-wrapped function themselves
 - Or returned from the processor function
 
-Once this happens, Balar executes all bulk operations that were buffered during this step using the inputs gathered from all executions. Results are then dispatched to the processor function executions, who then continue to progress towards the next checkpoint until all executions have returned.
+Once this happens, Balar executes all bulk operations that were buffered during this step using the inputs gathered from all executions. Results are then dispatched to the processor function executions which can continue to progress towards the next checkpoint. Rinse and repeat until all executions have returned their result.
 
-In short, the processor function is executed concurrently for all inputs, but with added synchronization checkpoints at Balar function call sites to allow accumulating multiple actions/queries into single bulk operations. See the budget update example annotated with checkpoint information below.
+See the budget update example annotated with checkpoint information below.
 
 ```ts 
 const requests = [
@@ -250,33 +250,39 @@ const requests = [
   { id: 4, amount: 3000 }, // fail (arbitrary update failure)
 ];
 
-await balar.run(requests, async (request) => {
+// Total number of checkpoints: 3
+
+const results = await balar.run(requests, async (request) => {
   if (request.amount === 0) {
     return 'budget should be greater than 0';              // ]-- #2 returns 
   }                                                        //              |
-                                                           //              |
   const currentBudget = await repo.getBudgets(request.id); // ]-- getBudgets([1,3,4])
+
   if (request.amount < currentBudget!.amount) {
     return 'budget must not be lowered';                   // ]-- #3 returns
   }                                                        //              |
-                                                           //              |
   const success = await repo.updateBudgets(request);       // ]-- updateBudgets([1,4])
+
   if (!success) {
     return 'budget update failed';                         // ]-- #4 returns
   }                                                        //              |
-                                                           //              |
   return true;                                             // ]-- #1 returns
 });
+
+expect(results).toEqual(
+  new Map([
+    [{ id: 1, amount: 1000 }, true],
+    [{ id: 2, amount: 0 }, 'budget should be greater than 0'],
+    [{ id: 3, amount: 1 }, 'budget must not be lowered'],
+    [{ id: 4, amount: 3000 }, 'budget update failed'],
+  ])
+)
 
 ```
 
 ---
 
 ## ❓ FAQ
-
-### How does Balar ensure only one bulk call is made?
-
-Balar automatically batches function calls across all executions of the `balar.run()` handler. Even if you call `getBooks()` multiple times from the wrapper, Balar will only perform **one bulk call to `getBooks()`** under the hood. It does this by leveraging deferred promises and the `AsyncLocalStorage` API to track execution context.
 
 ### Which signatures are accepted for bulk functions?
 
@@ -293,13 +299,11 @@ This is because it's the simplest signature for which it's possible to derive a 
 
 ### How to handle errors?
 
-Balar never catches any errors thrown from within a `balar.run()` processor function, making the whole operation fail if any execution throws. The recommended way to handle errors is to have them represented in your return type. 
-
-Reason: it's not possible to encode the type provided to `reject` into the `Promise` type, and it feels wrong for the library to constrain processor function types to return `Promise<T | Error>` instead of leaving control to the developer over how errors should look like.
+Balar never catches any errors thrown from within a `balar.run()` processor function, meaning the whole operation fails if any execution throws. The recommended way to handle errors is to have them represented in the return type of the processor function.
 
 ### Can I use Balar-wrapped functions as drop-in replacements for the original functions?
 
-No. At this time, using a Balar-wrapped function or object outside of a `balar.run()` execution context will result in an exception being thrown. While it forces consumers into creating a `balar` execution context for any code using wrappers, it also makes said code more predictable because you don't have to ask yourself whether it will synchronize/batch or not (it always will).
+No, at this time, using a Balar-wrapped function or object outside of a `balar.run()` execution context will result in an exception being thrown. While it forces consumers into creating a `balar` execution context for any code using wrappers, it also makes said code more predictable.
 
 ### What if I run nested `balar.run()` calls ?
 
@@ -315,9 +319,6 @@ await balar.run([1, 2], async (n) => {
 });
 ```
 
----
+### How does it differ from GraphQL's DataLoader?
 
-## Non-Goals (Everything Else)
-
-By design, Balar concerns itself with only 3 things: gathering inputs for bulk operations, executing them, and being transparent about how it does it. With how “intrusive” the abstractions of this library are, I wouldn't want you to have to trust it with more than strictly necessary. Any other feature (caching, timeouts, retries…) are out of scope and can be handled by other means in your application code instead. Balar only provides an alternative way to write bulk processing code.
-
+DataLoader is an excellent library and the primary source of inspiration for Balar. It allows you to batch requests to the same source within the same event loop tick. Balar takes the same concept but batches requests to the same source **within the explicit scope** you provide (e.g. across the executions of a processor function for a given set of inputs). This approach guarantees consistent batching behaviour even when executing workflows that include calls to "non-batch" async functions (see https://github.com/graphql/dataloader/issues/285).
