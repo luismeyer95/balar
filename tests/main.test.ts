@@ -238,8 +238,20 @@ describe('tests', () => {
   });
 
   describe('basic tests', () => {
-    test('executing scalar function outside bulk exec should fail', async () => {
-      await expect(registry.getCurrentBudgets(1)).rejects.toThrow();
+    test('executing wrapped function outside bulk exec should succeed', async () => {
+      const result = await registry.getCurrentBudgets(1);
+
+      expect(result).toEqual(
+        new Map([
+          [
+            1,
+            {
+              accountId: 1,
+              amount: 500,
+            },
+          ],
+        ]),
+      );
     });
 
     test('no op processor', async () => {

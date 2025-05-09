@@ -130,25 +130,22 @@ function generateUserExposedFn(
   return (async (
     input: unknown | unknown[],
     ...extraArgs: unknown[]
-  ): Promise<unknown | undefined | Map<unknown, unknown>> => {
+  ): Promise<unknown | Map<unknown, unknown>> => {
     const bulkContext = EXECUTION.getStore();
+    const inputs = Array.isArray(input) ? input : [input];
 
     if (!bulkContext) {
-      throw new Error('balar error: bulk function called outside of a balar execution');
+      return entry.fn(inputs, ...extraArgs);
     }
 
     const argsId = extraArgs.length ? hash(extraArgs).slice(0, 6) : '';
     const uniqueOperationId = `${uniquePrefix}-${entryName}${argsId}`;
 
-    if (bulkContext.logger) {
-      bulkContext.logger(
-        `queueing input ${JSON.stringify(input)} for operation ${uniqueOperationId}`,
-      );
-    }
+    bulkContext.logger?.(
+      `queueing input ${JSON.stringify(input)} for operation ${uniqueOperationId}`,
+    );
 
-    const inputs = Array.isArray(input) ? input : [input];
-
-    const allResults = await bulkContext.callBulkHandler(
+    const allResults = await bulkContext.registerCall(
       uniqueOperationId,
       entry,
       inputs,

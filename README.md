@@ -295,30 +295,10 @@ type BulkFn<In, Out, Args extends readonly unknown[]> = (
 ) => Promise<Map<In, Out>>;
 ```
 
-This is because it's the simplest signature for which it's possible to derive a single-item overload (returning an array of `Out` would be ambiguous: how to link output to input if the output array is not the same length as the input array at runtime?).
-
 ### How to handle errors?
 
 Balar never catches any errors thrown from within a `balar.run()` processor function, meaning the whole operation fails if any execution throws. The recommended way to handle errors is to have them represented in the return type of the processor function.
 
-### Can I use Balar-wrapped functions as drop-in replacements for the original functions?
-
-No, at this time, using a Balar-wrapped function or object outside of a `balar.run()` execution context will result in an exception being thrown. While it forces consumers into creating a `balar` execution context for any code using wrappers, it also makes said code more predictable.
-
-### What if I run nested `balar.run()` calls ?
-
-Balar will automatically understand how to handle operations within nested `balar.run()` calls.
-
-```ts
-await balar.run([1, 2], async (n) => {
-  await balar.run([n, n + 10], async () => {
-    // Will wait to collect all 4 inputs ([1, 11, 2, 12]) before executing
-    // the underlying bulk operation
-    await wrapper.bulkOp(n);
-  });
-});
-```
-
 ### How does it differ from GraphQL's DataLoader?
 
-DataLoader is an excellent library and the primary source of inspiration for Balar. It allows you to batch requests to the same source within the same event loop tick. Balar takes the same concept but batches requests to the same source **within the explicit scope** you provide (e.g. across the executions of a processor function for a given set of inputs). This approach guarantees consistent batching behaviour even when executing workflows that include calls to "non-batch" async functions (see https://github.com/graphql/dataloader/issues/285).
+DataLoader is the primary source of inspiration for Balar. It allows you to batch requests to the same source within the same event loop tick. Balar takes the same concept but with a different implementation, batching requests to the same source within the explicit scope you provide (e.g. across the executions of a processor function for a given set of inputs). This approach guarantees consistent batching behaviour even when executing workflows that include calls to "non-batch" async functions (see https://github.com/graphql/dataloader/issues/285). Balar also provides some utilities to simplify usage at scale within API development projects (object wrappers).

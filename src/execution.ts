@@ -236,7 +236,7 @@ export class BalarExecution<MainIn, MainOut> {
     return result;
   }
 
-  callBulkHandler(
+  registerCall(
     operationId: string,
     config: RegistryEntry<unknown, unknown, unknown[]>,
     inputs: unknown[],
