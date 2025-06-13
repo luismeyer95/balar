@@ -57,7 +57,6 @@ export type ScopeOperation<In, Out> = {
   input: In[];
   fnByInput: Map<In, (request: In) => Promise<Out>>;
   call: DeferredPromise<Map<In, Out>> | null;
-  cachedResolutionAwaiter: Promise<undefined>;
 };
 
 /**

@@ -68,18 +68,13 @@ export async function run<In, Out>(
     return new BalarExecution(processor, opts).run(inputs);
   }
 
-  return execution.runNested(inputs, processor);
+  // TODO: pick default partition key
+  return execution.runNested(inputs, processor, -1);
 }
 
 export class BalarExecution<MainIn, MainOut> {
   checkpointCache: Map<string, BulkOperation<unknown, unknown, unknown[]>> = new Map();
-
-  scopeSyncMetadata: ScopeOperation<unknown, unknown> = {
-    input: [],
-    fnByInput: new Map(),
-    call: null,
-    cachedResolutionAwaiter: DEFAULT_AWAITER,
-  };
+  scopeSyncCache: Map<number, ScopeOperation<unknown, unknown>> = new Map();
 
   awaitingProcessors: Set<number> = new Set();
   doneProcessors = 0;
@@ -95,7 +90,6 @@ export class BalarExecution<MainIn, MainOut> {
     opts: ExecutionOptions,
   ) {
     this.processor = processor;
-    this.clearScopeSyncMetadata();
 
     if (opts.concurrency) {
       this.maxConcurrency = opts.concurrency;
@@ -112,7 +106,17 @@ export class BalarExecution<MainIn, MainOut> {
     this.totalProcessors = 0;
   }
 
-  clearScopeSyncMetadata() {
+  initScopeSyncPartition() {
+    const scopeSyncMetadata: ScopeOperation<unknown, unknown> = {
+      input: [],
+      fnByInput: new Map(),
+      call: this.initDeferredPromise(),
+    };
+
+    return scopeSyncMetadata;
+  }
+
+  initDeferredPromise(): DeferredPromise<Map<unknown, unknown>> {
     const call: DeferredPromise<Map<unknown, unknown>> = {
       resolve: () => {},
       reject: () => {},
@@ -124,17 +128,7 @@ export class BalarExecution<MainIn, MainOut> {
       call.reject = reject;
     });
 
-    const scopeSyncMetadata: ScopeOperation<unknown, unknown> = {
-      input: [],
-      fnByInput: new Map(),
-      call,
-      // Whatever the outcome of the nested scope, it should not fail awaiters
-      cachedResolutionAwaiter: call.cachedPromise
-        .then(() => undefined)
-        .catch(() => undefined),
-    };
-
-    this.scopeSyncMetadata = scopeSyncMetadata;
+    return call;
   }
 
   async run(requests: MainIn[]): Promise<Map<MainIn, MainOut>> {
@@ -191,22 +185,23 @@ export class BalarExecution<MainIn, MainOut> {
       this.checkpointCache.clear();
     }
 
-    if (this.scopeSyncMetadata.fnByInput.size > 0) {
-      this.logger?.('executing scope checkpoint');
+    if (this.scopeSyncCache.size > 0) {
+      for (const scopeSyncPartition of this.scopeSyncCache.values()) {
+        this.logger?.('executing scope checkpoint');
 
-      const plan = new BalarExecution(this.scopeSyncMetadata.fnByInput, {
-        concurrency: this.maxConcurrency,
-        logger: this.logger,
-      });
+        const plan = new BalarExecution(scopeSyncPartition.fnByInput, {
+          concurrency: this.maxConcurrency,
+          logger: this.logger,
+        });
 
-      const scopeSyncMetadata = this.scopeSyncMetadata;
-      plan
-        .run(scopeSyncMetadata!.input)
-        .then((allResults) => scopeSyncMetadata.call?.resolve(allResults))
-        .catch((err) => scopeSyncMetadata.call?.reject(err));
+        plan
+          .run(scopeSyncPartition!.input)
+          .then((allResults) => scopeSyncPartition.call?.resolve(allResults))
+          .catch((err) => scopeSyncPartition.call?.reject(err));
+      }
 
-      // Prevent next balar fn calls in same stack frame to schedule redundant checkpoint
-      this.clearScopeSyncMetadata();
+      // Prevent next scope calls in same stack frame to schedule redundant checkpoint
+      this.scopeSyncCache.clear();
     }
 
     this.awaitingProcessors.clear();
@@ -235,22 +230,21 @@ export class BalarExecution<MainIn, MainOut> {
   async runNested<In, Out>(
     requests: In[],
     processor: (request: In) => Promise<Out>,
-    partitionKey?: number,
+    partitionKey: number,
   ) {
     const processorId = PROCESSOR_ID.getStore();
     if (processorId == null) {
       throw new Error('balar error: missing processor ID');
     }
 
-    // for each partition, need
-    // - list of collected inputs
-    // - map of processor per input
-    // - resolve/reject + cached promise + awaiter
+    const scopeSyncPartition =
+      this.scopeSyncCache.get(partitionKey) ?? this.initScopeSyncPartition();
+    this.scopeSyncCache.set(partitionKey, scopeSyncPartition);
 
-    this.scopeSyncMetadata.input.push(...requests);
+    scopeSyncPartition.input.push(...requests);
 
     for (const request of requests) {
-      this.scopeSyncMetadata.fnByInput.set(
+      scopeSyncPartition.fnByInput.set(
         request,
         processor as (req: unknown) => Promise<unknown>,
       );
@@ -261,7 +255,7 @@ export class BalarExecution<MainIn, MainOut> {
       process.nextTick(() => this.executeCheckpoint());
     }
 
-    const allResults = (await this.scopeSyncMetadata.call?.cachedPromise) as Map<In, Out>;
+    const allResults = (await scopeSyncPartition.call?.cachedPromise) as Map<In, Out>;
 
     const result = new Map<In, Out>();
     for (const req of requests) {
@@ -288,26 +282,14 @@ export class BalarExecution<MainIn, MainOut> {
       extraArgs,
       call: null,
     };
+    this.checkpointCache.set(operationId, registryEntry);
 
     if (!registryEntry.call) {
-      registryEntry.call = {
-        resolve: () => {},
-        reject: () => {},
-        cachedPromise: null,
-      };
-
-      registryEntry.call.cachedPromise = new Promise((resolve, reject) => {
-        registryEntry.call!.resolve = resolve;
-        registryEntry.call!.reject = reject;
-      });
-
-      this.checkpointCache.set(operationId, registryEntry);
+      registryEntry.call = this.initDeferredPromise();
     }
-
     registryEntry.input.push(...inputs);
 
     this.awaitingProcessors.add(processorId);
-
     if (this.awaitingProcessors.size + this.doneProcessors === this.totalProcessors) {
       process.nextTick(() => this.executeCheckpoint());
     }
@@ -316,7 +298,11 @@ export class BalarExecution<MainIn, MainOut> {
     return registryEntry.call!.cachedPromise!;
   }
 
-  async awaitNextScopeResolution() {
-    return this.scopeSyncMetadata.cachedResolutionAwaiter!;
+  async awaitNextScopeResolution(): Promise<undefined> {
+    await new Promise((resolve) => process.nextTick(resolve));
+    // Whatever the outcome of the nested scope partitions, it should never fail awaiters
+    await Promise.allSettled(
+      this.scopeSyncCache.values().map((p) => p.call?.cachedPromise),
+    );
   }
 }

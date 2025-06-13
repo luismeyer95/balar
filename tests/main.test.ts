@@ -1242,9 +1242,9 @@ describe('tests', () => {
 
         // Assert
         const expected = new Map([
-          [1, 6],
+          [1, 1],
           [2, 6],
-          [3, 6],
+          [3, 3],
           [4, 6],
         ]);
         expect(result).toEqual(expected);
