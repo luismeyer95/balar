@@ -43,14 +43,18 @@ export type CheckedRegistryEntry<I, O, Args extends readonly unknown[]> = Requir
 export type BulkOperation<In, Out, Args extends readonly unknown[]> = {
   fn: BulkFn<In, Out, Args>;
   extraArgs: Args;
-  call: BulkInvocation<In, Out> | null;
+  call: DeferredExecutionCache<In, Out> | null;
 };
 
-export type BulkInvocation<In, Out> = {
+export type DeferredExecutionCache<In, Out> = {
   input: In[];
   resolve: (ret: Map<In, Out>) => void;
   reject: (err: Error) => void;
   cachedPromise: Promise<Map<In, Out>> | null;
+};
+
+export type DeferredScopeExecutionCache<In, Out> = DeferredExecutionCache<In, Out> & {
+  cachedResolutionAwaiter: Promise<undefined>;
 };
 
 /**
@@ -100,3 +104,5 @@ export type ObjectFacade<
 export type Facade<R extends Record<string, any>> = {
   [K in keyof R as IsBulkFn<R[K]> extends true ? K : never]: BalarizeFn<R[K]>;
 };
+
+export type ScopeProcessors<In, Out> = Map<In, (request: In) => Promise<Out>>;

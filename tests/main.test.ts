@@ -5,6 +5,7 @@ import {
   BudgetsRepository,
   UpdateIssues as Issues,
 } from './fakes/budget.fake';
+import { expectToHaveBeenCalledWithUnordered } from './jest-extensions';
 
 describe('tests', () => {
   const accountsRepo = new AccountsRepository();
@@ -1091,6 +1092,175 @@ describe('tests', () => {
       expect(spyBulkMulObj).toHaveBeenCalledTimes(2);
       expect(spyBulkMulObj).toHaveBeenCalledWith([1, 3], { rhs: 3 });
       expect(spyBulkMulObj).toHaveBeenCalledWith([2, 4], { rhs: 2 });
+    });
+  });
+
+  describe('control flow', () => {
+    describe('if', () => {
+      const noop = jest.fn(async (n: number[]) => new Map(n.map((id) => [id, id])));
+      const sideEffect = jest.fn(async (n: number[]) => new Map(n.map((id) => [id, id])));
+      const triple = jest.fn(async (n: number[]) => new Map(n.map((id) => [id, id * 3])));
+      const reg = balar.wrap.fns({
+        noop,
+        sideEffect,
+        triple,
+      });
+
+      test('as side effect', async () => {
+        // Act
+        const budgetIds = [1, 2, 3, 4];
+        await balar.run(
+          budgetIds,
+          async (n) => {
+            await balar.if(n % 2 === 0, () => reg.sideEffect(n));
+
+            return reg.noop(n);
+          },
+          // { logger: console.log.bind(console) },
+        );
+
+        // Assert
+        expect(sideEffect).toHaveBeenCalledTimes(1);
+        expect(sideEffect).toHaveBeenCalledWith([2, 4]);
+        expect(noop).toHaveBeenCalledTimes(1);
+        expectToHaveBeenCalledWithUnordered(noop, [1, 2, 3, 4]);
+      });
+
+      test('as expr', async () => {
+        // Act
+        const budgetIds = [1, 2, 3, 4];
+        const result = await balar.run(
+          budgetIds,
+          async (n) => {
+            const tripled = await balar.if(n % 2 === 0, () => reg.triple(n));
+            const same = reg.noop(n);
+
+            return tripled ?? same;
+          },
+          // { logger: console.log.bind(console) },
+        );
+
+        // Assert
+        const expected = new Map([
+          [1, 1],
+          [2, 6],
+          [3, 3],
+          [4, 12],
+        ]);
+        expect(result).toEqual(expected);
+
+        expect(triple).toHaveBeenCalledTimes(1);
+        expect(triple).toHaveBeenCalledWith([2, 4]);
+
+        expect(noop).toHaveBeenCalledTimes(1);
+        expectToHaveBeenCalledWithUnordered(noop, [1, 2, 3, 4]);
+      });
+
+      test('concurrent if + bulk fn', async () => {
+        // Act
+        const budgetIds = [1, 2, 3, 4];
+        const result = await balar.run(
+          budgetIds,
+          async (n) => {
+            const [tripled, same] = await Promise.all([
+              balar.if(n % 2 === 0, () => reg.triple(n)),
+              reg.noop(n),
+            ]);
+
+            return tripled ?? same;
+          },
+          // { logger: console.log.bind(console) },
+        );
+
+        // Assert
+        const expected = new Map([
+          [1, 1],
+          [2, 6],
+          [3, 3],
+          [4, 12],
+        ]);
+        expect(result).toEqual(expected);
+
+        expect(triple).toHaveBeenCalledTimes(1);
+        expect(triple).toHaveBeenCalledWith([2, 4]);
+        expect(noop).toHaveBeenCalledTimes(1);
+        expectToHaveBeenCalledWithUnordered(noop, [1, 2, 3, 4]);
+      });
+
+      test('if / else', async () => {
+        // Act
+        const budgetIds = [1, 2, 3, 4];
+        const result = await balar.run(
+          budgetIds,
+          async (n) => {
+            return balar
+              .if(n % 2 === 0, () => {
+                return reg.triple(n);
+              })
+              .else(() => {
+                return reg.noop(n);
+              });
+          },
+          // { logger: console.log.bind(console) },
+        );
+
+        // Assert
+        const expected = new Map([
+          [1, 1],
+          [2, 6],
+          [3, 3],
+          [4, 12],
+        ]);
+        expect(result).toEqual(expected);
+
+        expect(triple).toHaveBeenCalledTimes(1);
+        expect(triple).toHaveBeenCalledWith([2, 4]);
+        expect(noop).toHaveBeenCalledTimes(1);
+        expect(noop).toHaveBeenCalledWith([1, 3]);
+      });
+
+      test('try / catch / finally', async () => {
+        // Act
+        const budgetIds = [1, 2, 3, 4];
+        const result = await balar.run(
+          budgetIds,
+          async (n) => {
+            try {
+              return await balar
+                .if(n % 2 === 0, () => {
+                  throw n * 3;
+                })
+                .else(() => {
+                  return reg.noop(n);
+                });
+            } catch (val: unknown) {
+              return val;
+            }
+
+            // return balar
+            //   .if(n % 2 === 0, () => {
+            //     throw n * 3;
+            //   })
+            //   .else(() => {
+            //     return reg.noop(n);
+            //   })
+            //   .catch((err: unknown) => {
+            //     console.log('hello. catch executed');
+            //     return err;
+            //   });
+          },
+          { logger: console.log.bind(console) },
+        );
+
+        // Assert
+        const expected = new Map([
+          [1, 6],
+          [2, 6],
+          [3, 6],
+          [4, 6],
+        ]);
+        expect(result).toEqual(expected);
+      });
     });
   });
 
