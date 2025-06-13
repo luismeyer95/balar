@@ -40,20 +40,23 @@ export type CheckedRegistryEntry<I, O, Args extends readonly unknown[]> = Requir
   RegistryEntry<I, O, Args>
 > & { __brand: 'checked' };
 
+export type DeferredPromise<T> = {
+  resolve: (ret: T) => void;
+  reject: (err: unknown) => void;
+  cachedPromise: Promise<T> | null;
+};
+
 export type BulkOperation<In, Out, Args extends readonly unknown[]> = {
-  fn: BulkFn<In, Out, Args>;
-  extraArgs: Args;
-  call: DeferredExecutionCache<In, Out> | null;
-};
-
-export type DeferredExecutionCache<In, Out> = {
   input: In[];
-  resolve: (ret: Map<In, Out>) => void;
-  reject: (err: Error) => void;
-  cachedPromise: Promise<Map<In, Out>> | null;
+  extraArgs: Args;
+  fn: BulkFn<In, Out, Args>;
+  call: DeferredPromise<Map<In, Out>> | null;
 };
 
-export type DeferredScopeExecutionCache<In, Out> = DeferredExecutionCache<In, Out> & {
+export type ScopeOperation<In, Out> = {
+  input: In[];
+  fnByInput: Map<In, (request: In) => Promise<Out>>;
+  call: DeferredPromise<Map<In, Out>> | null;
   cachedResolutionAwaiter: Promise<undefined>;
 };
 
@@ -104,5 +107,3 @@ export type ObjectFacade<
 export type Facade<R extends Record<string, any>> = {
   [K in keyof R as IsBulkFn<R[K]> extends true ? K : never]: BalarizeFn<R[K]>;
 };
-
-export type ScopeProcessors<In, Out> = Map<In, (request: In) => Promise<Out>>;

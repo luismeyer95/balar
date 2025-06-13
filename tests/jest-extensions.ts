@@ -9,7 +9,6 @@ export function expectToHaveBeenCalledWithUnordered<Params extends any[], Out>(
   for (let i = 0; i < call.length; i += 1) {
     const actualArg = call[i];
     const expectedArg = expectedArgs[i];
-    console.log({ actualArg, expectedArg });
     if (Array.isArray(actualArg)) {
       expect(actualArg.slice().sort()).toEqual(expectedArg.slice().sort());
     } else {

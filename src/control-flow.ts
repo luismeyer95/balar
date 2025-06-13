@@ -32,16 +32,17 @@ export function _if<T>(
   let elseCalled = false;
   process.nextTick(() => {
     if (!elseCalled) {
-      // add no-op processors to fill the count and trigger checkpoint
-      run([idFalse], NO_OP_PROCESSOR).catch(() => {
-        // silence on throw of true cond processors which will share
+      // Add no-op processors to fill the count and trigger checkpoint
+      execution.runNested([idFalse], NO_OP_PROCESSOR).catch(() => {
+        // Silence on throw for true branch processors as they will share
         // the same cached promise in the checkpoint
+        // TODO: this can be removed once scope partitioning is implemented
       });
     }
   });
 
   const trueResult = condition
-    ? run([idTrue], processorFn).then((res) => res.get(idTrue))
+    ? execution.runNested([idTrue], processorFn).then((res) => res.get(idTrue))
     : execution.awaitNextScopeResolution();
 
   return {
@@ -58,7 +59,9 @@ export function _if<T>(
         return trueResult;
       }
 
-      const falseResult = run([idFalse], elseProcessorFn).then((res) => res.get(idFalse));
+      const falseResult = execution
+        .runNested([idFalse], elseProcessorFn)
+        .then((res) => res.get(idFalse));
       return falseResult;
     },
   };

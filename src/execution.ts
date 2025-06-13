@@ -2,8 +2,8 @@ import {
   ExecutionOptions,
   BulkOperation,
   RegistryEntry,
-  ScopeProcessors,
-  DeferredScopeExecutionCache,
+  ScopeOperation,
+  DeferredPromise,
 } from './api';
 import { DEFAULT_AWAITER, EXECUTION, PROCESSOR_ID } from './constants';
 import { chunk } from './utils';
@@ -74,12 +74,10 @@ export async function run<In, Out>(
 export class BalarExecution<MainIn, MainOut> {
   checkpointCache: Map<string, BulkOperation<unknown, unknown, unknown[]>> = new Map();
 
-  queuedScopeProcessors: ScopeProcessors<unknown, unknown> = new Map();
-  scopeSyncMetadata: DeferredScopeExecutionCache<unknown, unknown> = {
+  scopeSyncMetadata: ScopeOperation<unknown, unknown> = {
     input: [],
-    resolve: () => {},
-    reject: () => {},
-    cachedPromise: null,
+    fnByInput: new Map(),
+    call: null,
     cachedResolutionAwaiter: DEFAULT_AWAITER,
   };
 
@@ -93,7 +91,7 @@ export class BalarExecution<MainIn, MainOut> {
   constructor(
     private readonly processor:
       | ((request: MainIn) => Promise<MainOut>)
-      | ScopeProcessors<MainIn, MainOut>,
+      | Map<MainIn, (request: MainIn) => Promise<MainOut>>,
     opts: ExecutionOptions,
   ) {
     this.processor = processor;
@@ -109,32 +107,32 @@ export class BalarExecution<MainIn, MainOut> {
 
   clearState() {
     this.checkpointCache = new Map();
-    this.queuedScopeProcessors = new Map();
     this.awaitingProcessors = new Set();
     this.doneProcessors = 0;
     this.totalProcessors = 0;
   }
 
   clearScopeSyncMetadata() {
-    this.queuedScopeProcessors.clear();
-
-    const scopeSyncMetadata: DeferredScopeExecutionCache<unknown, unknown> = {
-      input: [],
+    const call: DeferredPromise<Map<unknown, unknown>> = {
       resolve: () => {},
       reject: () => {},
       cachedPromise: null,
-      cachedResolutionAwaiter: DEFAULT_AWAITER,
     };
 
-    scopeSyncMetadata.cachedPromise = new Promise((resolve, reject) => {
-      scopeSyncMetadata.resolve = resolve;
-      scopeSyncMetadata.reject = reject;
+    call.cachedPromise = new Promise((resolve, reject) => {
+      call.resolve = resolve;
+      call.reject = reject;
     });
 
-    // Whatever the outcome of the nested scope, it should not fail awaiters
-    scopeSyncMetadata.cachedResolutionAwaiter = scopeSyncMetadata.cachedPromise
-      .then(() => undefined)
-      .catch(() => undefined);
+    const scopeSyncMetadata: ScopeOperation<unknown, unknown> = {
+      input: [],
+      fnByInput: new Map(),
+      call,
+      // Whatever the outcome of the nested scope, it should not fail awaiters
+      cachedResolutionAwaiter: call.cachedPromise
+        .then(() => undefined)
+        .catch(() => undefined),
+    };
 
     this.scopeSyncMetadata = scopeSyncMetadata;
   }
@@ -142,7 +140,7 @@ export class BalarExecution<MainIn, MainOut> {
   async run(requests: MainIn[]): Promise<Map<MainIn, MainOut>> {
     this.logger?.('starting execution for requests: ', requests);
 
-    const resultByRequest = new Map<MainIn, MainOut>();
+    const resultByInput = new Map<MainIn, MainOut>();
 
     await EXECUTION.run(this as BalarExecution<unknown, unknown>, async () => {
       for (const requestsBatch of chunk(requests, this.maxConcurrency)) {
@@ -150,12 +148,12 @@ export class BalarExecution<MainIn, MainOut> {
 
         const batchResults = await Promise.all(this.runBatch(requestsBatch));
         for (let i = 0; i < batchResults.length; i += 1) {
-          resultByRequest.set(requestsBatch[i], batchResults[i]);
+          resultByInput.set(requestsBatch[i], batchResults[i]);
         }
       }
     });
 
-    return resultByRequest;
+    return resultByInput;
   }
 
   private runBatch(requestBatch: MainIn[]): Promise<MainOut>[] {
@@ -190,60 +188,69 @@ export class BalarExecution<MainIn, MainOut> {
       }
 
       // Prevent next balar fn calls in same stack frame to schedule redundant checkpoint
-      this.awaitingProcessors.clear();
+      this.checkpointCache.clear();
     }
 
-    if (this.queuedScopeProcessors.size > 0) {
+    if (this.scopeSyncMetadata.fnByInput.size > 0) {
       this.logger?.('executing scope checkpoint');
 
-      const plan = new BalarExecution(this.queuedScopeProcessors, {
+      const plan = new BalarExecution(this.scopeSyncMetadata.fnByInput, {
         concurrency: this.maxConcurrency,
         logger: this.logger,
       });
 
+      const scopeSyncMetadata = this.scopeSyncMetadata;
       plan
-        .run(this.scopeSyncMetadata!.input)
-        .then((allResults) => this.scopeSyncMetadata?.resolve(allResults))
-        .catch((err) => this.scopeSyncMetadata?.reject(err))
-        .finally(() => this.clearScopeSyncMetadata());
+        .run(scopeSyncMetadata!.input)
+        .then((allResults) => scopeSyncMetadata.call?.resolve(allResults))
+        .catch((err) => scopeSyncMetadata.call?.reject(err));
+
       // Prevent next balar fn calls in same stack frame to schedule redundant checkpoint
-      this.queuedScopeProcessors.clear();
+      this.clearScopeSyncMetadata();
     }
+
+    this.awaitingProcessors.clear();
   }
 
   private executeCheckpointBulkOperation(opName: string) {
     const bulkOp = this.checkpointCache.get(opName);
-    const call = bulkOp?.call;
-    if (!call) {
+    if (!bulkOp?.call) {
       return;
     }
-
-    this.checkpointCache.delete(opName);
 
     this.logger?.(
       'executing underlying bulk operation',
       opName,
       'with args',
-      call.input,
+      bulkOp.input,
       ...bulkOp.extraArgs,
     );
 
     bulkOp
-      .fn(call.input, ...bulkOp.extraArgs)
-      .then(call.resolve)
-      .catch(call.reject);
+      .fn(bulkOp.input, ...bulkOp.extraArgs)
+      .then(bulkOp.call.resolve)
+      .catch(bulkOp.call.reject);
   }
 
-  async runNested<In, Out>(requests: In[], processor: (request: In) => Promise<Out>) {
+  async runNested<In, Out>(
+    requests: In[],
+    processor: (request: In) => Promise<Out>,
+    partitionKey?: number,
+  ) {
     const processorId = PROCESSOR_ID.getStore();
     if (processorId == null) {
       throw new Error('balar error: missing processor ID');
     }
 
+    // for each partition, need
+    // - list of collected inputs
+    // - map of processor per input
+    // - resolve/reject + cached promise + awaiter
+
     this.scopeSyncMetadata.input.push(...requests);
 
     for (const request of requests) {
-      this.queuedScopeProcessors.set(
+      this.scopeSyncMetadata.fnByInput.set(
         request,
         processor as (req: unknown) => Promise<unknown>,
       );
@@ -254,7 +261,7 @@ export class BalarExecution<MainIn, MainOut> {
       process.nextTick(() => this.executeCheckpoint());
     }
 
-    const allResults = (await this.scopeSyncMetadata.cachedPromise) as Map<In, Out>;
+    const allResults = (await this.scopeSyncMetadata.call?.cachedPromise) as Map<In, Out>;
 
     const result = new Map<In, Out>();
     for (const req of requests) {
@@ -277,13 +284,13 @@ export class BalarExecution<MainIn, MainOut> {
 
     const registryEntry = this.checkpointCache.get(operationId) ?? {
       ...config,
+      input: [],
       extraArgs,
       call: null,
     };
 
     if (!registryEntry.call) {
       registryEntry.call = {
-        input: [],
         resolve: () => {},
         reject: () => {},
         cachedPromise: null,
@@ -297,13 +304,11 @@ export class BalarExecution<MainIn, MainOut> {
       this.checkpointCache.set(operationId, registryEntry);
     }
 
-    registryEntry.call!.input.push(...inputs);
+    registryEntry.input.push(...inputs);
 
     this.awaitingProcessors.add(processorId);
 
     if (this.awaitingProcessors.size + this.doneProcessors === this.totalProcessors) {
-      // Only the last call to the processor should trigger the checkpoint,
-      // but multiple calls in that processor may schedule the checkpoint
       process.nextTick(() => this.executeCheckpoint());
     }
 

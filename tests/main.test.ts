@@ -1133,16 +1133,11 @@ describe('tests', () => {
 
       test('as side effect', async () => {
         // Act
-        const budgetIds = [1, 2, 3, 4];
-        await balar.run(
-          budgetIds,
-          async (n) => {
-            await balar.if(n % 2 === 0, () => reg.sideEffect(n));
+        await balar.run([1, 2, 3, 4], async (n) => {
+          await balar.if(n % 2 === 0, () => reg.sideEffect(n));
 
-            return reg.noop(n);
-          },
-          // { logger: console.log.bind(console) },
-        );
+          return reg.noop(n);
+        });
 
         // Assert
         expect(sideEffect).toHaveBeenCalledTimes(1);
@@ -1153,17 +1148,12 @@ describe('tests', () => {
 
       test('as expr', async () => {
         // Act
-        const budgetIds = [1, 2, 3, 4];
-        const result = await balar.run(
-          budgetIds,
-          async (n) => {
-            const tripled = await balar.if(n % 2 === 0, () => reg.triple(n));
-            const same = reg.noop(n);
+        const result = await balar.run([1, 2, 3, 4], async (n) => {
+          const tripled = await balar.if(n % 2 === 0, () => reg.triple(n));
+          const same = reg.noop(n);
 
-            return tripled ?? same;
-          },
-          // { logger: console.log.bind(console) },
-        );
+          return tripled ?? same;
+        });
 
         // Assert
         const expected = new Map([
@@ -1183,19 +1173,14 @@ describe('tests', () => {
 
       test('concurrent if + bulk fn', async () => {
         // Act
-        const budgetIds = [1, 2, 3, 4];
-        const result = await balar.run(
-          budgetIds,
-          async (n) => {
-            const [tripled, same] = await Promise.all([
-              balar.if(n % 2 === 0, () => reg.triple(n)),
-              reg.noop(n),
-            ]);
+        const result = await balar.run([1, 2, 3, 4], async (n) => {
+          const [tripled, same] = await Promise.all([
+            balar.if(n % 2 === 0, () => reg.triple(n)),
+            reg.noop(n),
+          ]);
 
-            return tripled ?? same;
-          },
-          // { logger: console.log.bind(console) },
-        );
+          return tripled ?? same;
+        });
 
         // Assert
         const expected = new Map([
@@ -1214,20 +1199,15 @@ describe('tests', () => {
 
       test('if / else', async () => {
         // Act
-        const budgetIds = [1, 2, 3, 4];
-        const result = await balar.run(
-          budgetIds,
-          async (n) => {
-            return balar
-              .if(n % 2 === 0, () => {
-                return reg.triple(n);
-              })
-              .else(() => {
-                return reg.noop(n);
-              });
-          },
-          // { logger: console.log.bind(console) },
-        );
+        const result = await balar.run([1, 2, 3, 4], async (n) => {
+          return balar
+            .if(n % 2 === 0, () => {
+              return reg.triple(n);
+            })
+            .else(() => {
+              return reg.noop(n);
+            });
+        });
 
         // Assert
         const expected = new Map([
@@ -1246,8 +1226,7 @@ describe('tests', () => {
 
       test('try / catch / finally', async () => {
         // Act
-        const budgetIds = [1, 2, 3, 4];
-        const result = await balar.run(budgetIds, async (n) => {
+        const result = await balar.run([1, 2, 3, 4], async (n) => {
           try {
             return await balar
               .if(n % 2 === 0, () => {
