@@ -304,6 +304,31 @@ describe('tests', () => {
       );
     });
 
+    test('bulk fn called twice', async () => {
+      // Arrange
+      const noop = jest.fn(async (_: number[]) => new Map<number, number>());
+      const registry = balar.wrap.fns({
+        noop,
+      });
+
+      // Act
+      const result = await balar.run([1, 2], async (id: number) => {
+        await registry.noop(id);
+        return registry.noop(id);
+      });
+
+      // Assert
+      expect(noop).toHaveBeenCalledTimes(2);
+      expect(noop.mock.calls[0][0]).toEqual([1, 2]);
+      expect(noop.mock.calls[1][0]).toEqual([1, 2]);
+      expect(result).toEqual(
+        new Map([
+          [1, undefined],
+          [2, undefined],
+        ]),
+      );
+    });
+
     test('simple workflow with 1 checkpoint', async () => {
       // Act
       const result = await balar.run([1], async function (id: number): Promise<number> {
@@ -1222,35 +1247,19 @@ describe('tests', () => {
       test('try / catch / finally', async () => {
         // Act
         const budgetIds = [1, 2, 3, 4];
-        const result = await balar.run(
-          budgetIds,
-          async (n) => {
-            try {
-              return await balar
-                .if(n % 2 === 0, () => {
-                  throw n * 3;
-                })
-                .else(() => {
-                  return reg.noop(n);
-                });
-            } catch (val: unknown) {
-              return val;
-            }
-
-            // return balar
-            //   .if(n % 2 === 0, () => {
-            //     throw n * 3;
-            //   })
-            //   .else(() => {
-            //     return reg.noop(n);
-            //   })
-            //   .catch((err: unknown) => {
-            //     console.log('hello. catch executed');
-            //     return err;
-            //   });
-          },
-          { logger: console.log.bind(console) },
-        );
+        const result = await balar.run(budgetIds, async (n) => {
+          try {
+            return await balar
+              .if(n % 2 === 0, () => {
+                throw n * 3;
+              })
+              .else(() => {
+                return reg.noop(n);
+              });
+          } catch (val: unknown) {
+            return val;
+          }
+        });
 
         // Assert
         const expected = new Map([

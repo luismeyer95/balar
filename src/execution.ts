@@ -72,7 +72,7 @@ export async function run<In, Out>(
 }
 
 export class BalarExecution<MainIn, MainOut> {
-  internalRegistry: Map<string, BulkOperation<unknown, unknown, unknown[]>> = new Map();
+  checkpointCache: Map<string, BulkOperation<unknown, unknown, unknown[]>> = new Map();
 
   queuedScopeProcessors: ScopeProcessors<unknown, unknown> = new Map();
   scopeSyncMetadata: DeferredScopeExecutionCache<unknown, unknown> = {
@@ -83,7 +83,6 @@ export class BalarExecution<MainIn, MainOut> {
     cachedResolutionAwaiter: DEFAULT_AWAITER,
   };
 
-  queuedOperations: Set<string> = new Set();
   awaitingProcessors: Set<number> = new Set();
   doneProcessors = 0;
   totalProcessors = 0;
@@ -109,9 +108,8 @@ export class BalarExecution<MainIn, MainOut> {
   }
 
   clearState() {
-    this.internalRegistry = new Map();
+    this.checkpointCache = new Map();
     this.queuedScopeProcessors = new Map();
-    this.queuedOperations = new Set();
     this.awaitingProcessors = new Set();
     this.doneProcessors = 0;
     this.totalProcessors = 0;
@@ -125,7 +123,7 @@ export class BalarExecution<MainIn, MainOut> {
       resolve: () => {},
       reject: () => {},
       cachedPromise: null,
-      cachedResolutionAwaiter: null as any,
+      cachedResolutionAwaiter: DEFAULT_AWAITER,
     };
 
     scopeSyncMetadata.cachedPromise = new Promise((resolve, reject) => {
@@ -184,16 +182,14 @@ export class BalarExecution<MainIn, MainOut> {
   }
 
   private executeCheckpoint() {
-    if (this.queuedOperations.size > 0) {
+    if (this.checkpointCache.size > 0) {
       this.logger?.('executing checkpoint');
 
-      for (const name of this.queuedOperations) {
-        const op = this.internalRegistry.get(name)!;
-        this.executeCheckpointBulkOperation(name, op);
+      for (const name of this.checkpointCache.keys()) {
+        this.executeCheckpointBulkOperation(name);
       }
 
       // Prevent next balar fn calls in same stack frame to schedule redundant checkpoint
-      this.queuedOperations.clear();
       this.awaitingProcessors.clear();
     }
 
@@ -215,14 +211,14 @@ export class BalarExecution<MainIn, MainOut> {
     }
   }
 
-  private executeCheckpointBulkOperation(
-    opName: string,
-    bulkOp: BulkOperation<unknown, unknown, unknown[]>,
-  ) {
-    const call = bulkOp.call;
+  private executeCheckpointBulkOperation(opName: string) {
+    const bulkOp = this.checkpointCache.get(opName);
+    const call = bulkOp?.call;
     if (!call) {
       return;
     }
+
+    this.checkpointCache.delete(opName);
 
     this.logger?.(
       'executing underlying bulk operation',
@@ -235,8 +231,7 @@ export class BalarExecution<MainIn, MainOut> {
     bulkOp
       .fn(call.input, ...bulkOp.extraArgs)
       .then(call.resolve)
-      .catch(call.reject)
-      .finally(() => (bulkOp.call = null));
+      .catch(call.reject);
   }
 
   async runNested<In, Out>(requests: In[], processor: (request: In) => Promise<Out>) {
@@ -280,7 +275,7 @@ export class BalarExecution<MainIn, MainOut> {
       throw new Error('balar error: missing processor ID');
     }
 
-    const registryEntry = this.internalRegistry.get(operationId) ?? {
+    const registryEntry = this.checkpointCache.get(operationId) ?? {
       ...config,
       extraArgs,
       call: null,
@@ -299,15 +294,16 @@ export class BalarExecution<MainIn, MainOut> {
         registryEntry.call!.reject = reject;
       });
 
-      this.internalRegistry.set(operationId, registryEntry);
+      this.checkpointCache.set(operationId, registryEntry);
     }
 
     registryEntry.call!.input.push(...inputs);
 
     this.awaitingProcessors.add(processorId);
-    this.queuedOperations.add(operationId);
 
     if (this.awaitingProcessors.size + this.doneProcessors === this.totalProcessors) {
+      // Only the last call to the processor should trigger the checkpoint,
+      // but multiple calls in that processor may schedule the checkpoint
       process.nextTick(() => this.executeCheckpoint());
     }
 
