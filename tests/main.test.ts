@@ -1325,6 +1325,42 @@ describe('tests', () => {
         ]);
         expect(result).toEqual(expected);
       });
+
+      test('each branch runs concurrently', async () => {
+        // Act
+        const { successes, errors } = await balar.run([1, 2, 3, 4, 5], async (n) => {
+          return balar
+            .if(n <= 2, async () => {
+              const x = await registry.mul(n, 2);
+              const y = await registry.mul(x!, 3);
+              return y;
+            })
+            .else(async () => {
+              if (n > 4) {
+                throw -1;
+              }
+              const x = await registry.mul(n, 100);
+              const y = await registry.mul(x!, 10);
+              return y;
+            });
+        });
+
+        // Assert (call order matters)
+        expect(spies.mul).toHaveBeenNthCalledWith(1, [1, 2], 2);
+        expect(spies.mul).toHaveBeenNthCalledWith(2, [3, 4], 100);
+        expect(spies.mul).toHaveBeenNthCalledWith(3, [2, 4], 3);
+        expect(spies.mul).toHaveBeenNthCalledWith(4, [300, 400], 10);
+
+        expect(successes).toEqual(
+          new Map([
+            [1, 6],
+            [2, 12],
+            [3, 3000],
+            [4, 4000],
+          ]),
+        );
+        expect(errors).toEqual(new Map([[5, -1]]));
+      });
     });
   });
 
