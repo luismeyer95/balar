@@ -11,29 +11,46 @@ describe('tests', () => {
   const accountsRepo = new AccountsRepository();
   const budgetsRepo = new BudgetsRepository();
 
-  const spyInspect = jest.fn(async () => new Map());
-  const spyGetCurrentBudgets = jest.fn(budgetsRepo.getCurrentBudgets.bind(budgetsRepo));
-  const spyGetBudgetSpends = jest.fn(budgetsRepo.getBudgetSpends.bind(budgetsRepo));
-  const spyUpdateBudgets = jest.fn(budgetsRepo.updateBudgets.bind(budgetsRepo));
-  const spyGetAccountsById = jest.fn(accountsRepo.getAccountsById.bind(accountsRepo));
-  const spyLinkBudgetsToAccount = jest.fn(
-    accountsRepo.linkAccountToBudgets.bind(accountsRepo),
-  );
+  const spies = {
+    getCurrentBudgets: jest.fn(budgetsRepo.getCurrentBudgets.bind(budgetsRepo)),
+    getBudgetSpends: jest.fn(budgetsRepo.getBudgetSpends.bind(budgetsRepo)),
+    updateBudgets: jest.fn(budgetsRepo.updateBudgets.bind(budgetsRepo)),
+    getAccountsById: jest.fn(accountsRepo.getAccountsById.bind(accountsRepo)),
+    linkBudgetsToAccount: jest.fn(accountsRepo.linkAccountToBudgets.bind(accountsRepo)),
+
+    inspect: jest.fn(async () => new Map()),
+    noop: jest.fn(async (_: number[]) => new Map<number, undefined>()),
+    identity: jest.fn(async (_: number[]) => new Map(_.map((x) => [x, x]))),
+    identity1: jest.fn(async (_: number[]) => new Map(_.map((x) => [x, x]))),
+    identity2: jest.fn(async (_: number[]) => new Map(_.map((x) => [x, x]))),
+    mul: jest.fn(async (_: number[], _2: number) => new Map(_.map((x) => [x, x * _2]))),
+    lt: jest.fn(async (_: number[], _2: number) => new Map(_.map((x) => [x, x < _2]))),
+    gt: jest.fn(async (_: number[], _2: number) => new Map(_.map((x) => [x, x > _2]))),
+  };
 
   let registry = createDefaultRegistry();
 
   function createDefaultRegistry() {
     return balar.wrap.fns({
-      // Register your bulk API dependencies
-      getAccountsById: spyGetAccountsById as typeof accountsRepo.getAccountsById,
-      getCurrentBudgets: spyGetCurrentBudgets as typeof budgetsRepo.getCurrentBudgets,
-      updateBudgets: spyUpdateBudgets as typeof budgetsRepo.updateBudgets,
-      getBudgetSpends: spyGetBudgetSpends as typeof budgetsRepo.getBudgetSpends,
-      linkAccountToBudgets:
-        spyLinkBudgetsToAccount as typeof accountsRepo.linkAccountToBudgets,
-      inspect: spyInspect as any as <T>(args: T[]) => Promise<Map<T, void>>,
+      // Test function primitives
+      noop: spies.noop,
+      identity: spies.identity,
+      identity1: spies.identity1,
+      identity2: spies.identity2,
+      mul: spies.mul,
+      lt: spies.lt,
+      gt: spies.gt,
+      inspect: spies.inspect as any as <T>(args: T[]) => Promise<Map<T, void>>,
       // @ts-expect-error
-      inspect2: spyInspect as (args: any[]) => Promise<Map<any, void>>,
+      inspectBad: spies.inspect as (args: any[]) => Promise<Map<any, void>>,
+
+      // Budget domain using fakes
+      getAccountsById: spies.getAccountsById as typeof accountsRepo.getAccountsById,
+      getCurrentBudgets: spies.getCurrentBudgets as typeof budgetsRepo.getCurrentBudgets,
+      updateBudgets: spies.updateBudgets as typeof budgetsRepo.updateBudgets,
+      getBudgetSpends: spies.getBudgetSpends as typeof budgetsRepo.getBudgetSpends,
+      linkAccountToBudgets:
+        spies.linkBudgetsToAccount as typeof accountsRepo.linkAccountToBudgets,
     });
   }
 
@@ -94,13 +111,13 @@ describe('tests', () => {
 
     describe('fns', () => {
       test('default config', async () => {
-        const noop = jest.fn(async (_: number[]) => new Map<number, void>());
-        const wrapper = balar.wrap.fns({
+        const noop = jest.fn(async (_: number[]) => new Map<number, undefined>());
+        const registry = balar.wrap.fns({
           noop,
         });
 
         await balar.run([1, 2], async function (arg) {
-          return wrapper.noop(arg);
+          return registry.noop(arg);
         });
 
         expect(noop).toHaveBeenCalledWith([1, 2]);
@@ -119,22 +136,22 @@ describe('tests', () => {
 
     describe('object', () => {
       test('regular object', async () => {
-        const noop = jest.fn(async (_: number[]) => new Map<number, void>());
-        const wrapper = balar.wrap.object({
+        const noop = jest.fn(async (_: number[]) => new Map<number, undefined>());
+        const registry = balar.wrap.object({
           noop,
           prop: 'random',
         });
         // @ts-expect-error -- does not exist
-        wrapper.prop;
+        registry.prop;
 
         await balar.run([1, 2], async function (arg) {
-          return wrapper.noop(arg);
+          return registry.noop(arg);
         });
 
         expect(noop).toHaveBeenCalledWith([1, 2]);
       });
 
-      test('throws inside context', async () => {
+      test('throws inside scope', async () => {
         const throwingCall = async () => {
           await balar.run([1], async function () {
             balar.wrap.object({});
@@ -161,12 +178,12 @@ describe('tests', () => {
           }
         }
 
-        const wrapper = balar.wrap.object(new Derived());
+        const registry = balar.wrap.object(new Derived());
         // @ts-expect-error -- the bulk function input type is an array
-        wrapper.takesArrayInput;
+        registry.takesArrayInput;
 
-        const results = await balar.run([1, 2], async function (arg) {
-          return wrapper.base(arg).then((arg) => wrapper.derived(arg!));
+        const { successes: results } = await balar.run([1, 2], async function (arg) {
+          return registry.base(arg).then((arg) => registry.derived(arg!));
         });
 
         expect(results).toEqual(
@@ -202,7 +219,7 @@ describe('tests', () => {
         budgetsRepo.spendOnBudget(2, 450);
 
         // Act
-        const resultWithScalarApi = await balar.run(
+        const { successes: resultWithScalarApi } = await balar.run(
           [1, 2],
           async function getRemainingAmount(budgetId: number): Promise<number> {
             const currentBudget = await registry.getCurrentBudgets(budgetId);
@@ -213,7 +230,7 @@ describe('tests', () => {
         );
 
         // Act
-        const resultWithBulkApi = await balar.run(
+        const { successes: resultWithBulkApi } = await balar.run(
           [1, 2],
           async function getRemainingAmount(budgetId: number): Promise<number> {
             const currentBudget = (await registry.getCurrentBudgets([budgetId])).get(
@@ -257,7 +274,7 @@ describe('tests', () => {
 
     test('no op processor', async () => {
       // Act
-      const result = await balar.run([1, 2], async function () {});
+      const { successes: result } = await balar.run([1, 2], async function () {});
 
       // Assert
       expect(result).toEqual(
@@ -270,7 +287,7 @@ describe('tests', () => {
 
     test('empty inputs', async () => {
       // Act
-      const result = await balar.run(
+      const { successes: result } = await balar.run(
         [],
         async function getBudgetAmount(budgetId: number): Promise<number> {
           const currentBudget = await registry.getCurrentBudgets(budgetId);
@@ -283,17 +300,13 @@ describe('tests', () => {
     });
 
     test('no output from bulk fn for given input', async () => {
-      // Arrange
-      const registry = balar.wrap.fns({
-        noop: async (_: number[]): Promise<Map<number, number>> => new Map(),
-      });
-
       // Act
-      const result = await balar.run([1, 2], async function (id: number): Promise<
-        number | undefined
-      > {
-        return registry.noop(id);
-      });
+      const { successes: result } = await balar.run(
+        [1, 2],
+        async function (id: number): Promise<number | undefined> {
+          return registry.noop(id);
+        },
+      );
 
       // Assert
       expect(result).toEqual(
@@ -304,23 +317,19 @@ describe('tests', () => {
       );
     });
 
-    test('bulk fn called twice', async () => {
-      // Arrange
-      const noop = jest.fn(async (_: number[]) => new Map<number, number>());
-      const registry = balar.wrap.fns({
-        noop,
-      });
-
+    test('bulk fn called thrice', async () => {
       // Act
-      const result = await balar.run([1, 2], async (id: number) => {
+      const { successes: result } = await balar.run([1, 2], async (id: number) => {
         await registry.noop(id);
+        await registry.noop(id * 2);
         return registry.noop(id);
       });
 
       // Assert
-      expect(noop).toHaveBeenCalledTimes(2);
-      expect(noop.mock.calls[0][0]).toEqual([1, 2]);
-      expect(noop.mock.calls[1][0]).toEqual([1, 2]);
+      expect(spies.noop).toHaveBeenCalledTimes(3);
+      expect(spies.noop.mock.calls[0][0]).toEqual([1, 2]);
+      expect(spies.noop.mock.calls[1][0]).toEqual([2, 4]);
+      expect(spies.noop.mock.calls[2][0]).toEqual([1, 2]);
       expect(result).toEqual(
         new Map([
           [1, undefined],
@@ -331,16 +340,19 @@ describe('tests', () => {
 
     test('simple workflow with 1 checkpoint', async () => {
       // Act
-      const result = await balar.run([1], async function (id: number): Promise<number> {
-        const currentBudget = await registry.getCurrentBudgets(id);
-        return currentBudget!.amount;
-      });
+      const { successes: result } = await balar.run(
+        [1],
+        async function (id: number): Promise<number> {
+          const currentBudget = await registry.getCurrentBudgets(id);
+          return currentBudget!.amount;
+        },
+      );
 
       // Assert
       const expected = new Map([[1, 500]]);
       expect(result).toEqual(expected);
 
-      expect(spyGetCurrentBudgets).toHaveBeenCalledTimes(1);
+      expect(spies.getCurrentBudgets).toHaveBeenCalledTimes(1);
     });
 
     test('standard bulk workflow with sequential checkpoints (scalar api)', async () => {
@@ -354,7 +366,7 @@ describe('tests', () => {
         { id: 3, amount: 1 }, // fail: can't lower (from 1500 to 1)
         { id: 4, amount: 3000 }, // fail (forced failure)
       ];
-      const issues = await balar.run(
+      const { successes: issues } = await balar.run(
         requests,
         async function updateBudgetWithValidation(request: {
           id: number;
@@ -389,8 +401,8 @@ describe('tests', () => {
       ]);
       expect(issues).toEqual(expected);
 
-      expect(spyGetCurrentBudgets).toHaveBeenCalledTimes(1);
-      expect(spyUpdateBudgets).toHaveBeenCalledTimes(1);
+      expect(spies.getCurrentBudgets).toHaveBeenCalledTimes(1);
+      expect(spies.updateBudgets).toHaveBeenCalledTimes(1);
     });
 
     test('standard bulk workflow with sequential checkpoints (bulk api)', async () => {
@@ -404,7 +416,7 @@ describe('tests', () => {
         { id: 3, amount: 1 }, // fail: can't lower (from 1500 to 1)
         { id: 4, amount: 3000 }, // fail (forced failure)
       ];
-      const issues = await balar.run(
+      const { successes: issues } = await balar.run(
         requests,
         async function updateBudgetWithValidation(request: {
           id: number;
@@ -447,10 +459,10 @@ describe('tests', () => {
       ]);
       expect(issues).toEqual(expected);
 
-      expect(spyGetCurrentBudgets).toHaveBeenCalledTimes(1);
-      expect(spyGetCurrentBudgets).toHaveBeenCalledWith([1, 3, 4]);
-      expect(spyUpdateBudgets).toHaveBeenCalledTimes(1);
-      expect(spyUpdateBudgets).toHaveBeenCalledWith([
+      expect(spies.getCurrentBudgets).toHaveBeenCalledTimes(1);
+      expect(spies.getCurrentBudgets).toHaveBeenCalledWith([1, 3, 4]);
+      expect(spies.updateBudgets).toHaveBeenCalledTimes(1);
+      expect(spies.updateBudgets).toHaveBeenCalledWith([
         { id: 1, amount: 1000 },
         { id: 4, amount: 3000 },
       ]);
@@ -468,7 +480,7 @@ describe('tests', () => {
 
       // Act
       const budgetIds = [1, 2, 3, 4];
-      const issues = await balar.run(budgetIds, async (n) => {
+      const { successes: issues } = await balar.run(budgetIds, async (n) => {
         return n % 2 === 0 ? registry.mul(n, 2) : registry.mul(n, 3);
       });
 
@@ -496,7 +508,7 @@ describe('tests', () => {
       budgetsRepo.spendOnBudget(5, 6);
 
       // Act/Assert
-      const result = await balar.run(
+      const { successes: result } = await balar.run(
         [accountId1, accountId2],
         async function getSpendOfAccount(accountId) {
           const account = await registry.getAccountsById(accountId);
@@ -511,14 +523,14 @@ describe('tests', () => {
         },
       );
 
-      expect(spyGetAccountsById).toHaveBeenCalledTimes(1);
-      expect(spyGetAccountsById).toHaveBeenCalledWith([accountId1, accountId2]);
+      expect(spies.getAccountsById).toHaveBeenCalledTimes(1);
+      expect(spies.getAccountsById).toHaveBeenCalledWith([accountId1, accountId2]);
 
-      expect(spyGetBudgetSpends).toHaveBeenCalledTimes(1);
-      expect(spyGetBudgetSpends).toHaveBeenCalledWith([1, 2, 3, 4, 5, 6]);
+      expect(spies.getBudgetSpends).toHaveBeenCalledTimes(1);
+      expect(spies.getBudgetSpends).toHaveBeenCalledWith([1, 2, 3, 4, 5, 6]);
 
-      expect(spyInspect).toHaveBeenCalledTimes(1);
-      expect(spyInspect).toHaveBeenCalledWith([
+      expect(spies.inspect).toHaveBeenCalledTimes(1);
+      expect(spies.inspect).toHaveBeenCalledWith([
         200,
         1,
         undefined,
@@ -544,7 +556,7 @@ describe('tests', () => {
 
       // Act
       const budgetIds = [1, 2, 3, 4];
-      const issues = await balar.run(
+      const { successes: issues } = await balar.run(
         budgetIds,
         async function (budgetId: number): Promise<Issues | true> {
           const issues = new Issues();
@@ -574,8 +586,8 @@ describe('tests', () => {
       ]);
       expect(issues).toEqual(expected);
 
-      expect(spyGetCurrentBudgets).toHaveBeenCalledTimes(1);
-      expect(spyGetBudgetSpends).toHaveBeenCalledTimes(1);
+      expect(spies.getCurrentBudgets).toHaveBeenCalledTimes(1);
+      expect(spies.getBudgetSpends).toHaveBeenCalledTimes(1);
     });
 
     test('concurrent bulk execs using the same scalar fns should be isolated', async () => {
@@ -596,13 +608,13 @@ describe('tests', () => {
         [1, 500],
         [2, 1000],
       ]);
-      expect(result1).toEqual(expected1);
+      expect(result1.successes).toEqual(expected1);
       const expected2 = new Map([
         [3, 1500],
         [4, 2000],
       ]);
-      expect(result2).toEqual(expected2);
-      expect(spyGetCurrentBudgets).toHaveBeenCalledTimes(2);
+      expect(result2.successes).toEqual(expected2);
+      expect(spies.getCurrentBudgets).toHaveBeenCalledTimes(2);
     });
 
     test('processor should trigger checkpoint by returning', async () => {
@@ -613,7 +625,7 @@ describe('tests', () => {
 
       // Act
       const budgetIds = [1, 2, 3, 4];
-      const results = await balar.run(
+      const { successes: results } = await balar.run(
         budgetIds,
         async function getRemainingBudget(budgetId: number) {
           // Arbitrary return for ID 4
@@ -639,32 +651,22 @@ describe('tests', () => {
       ]);
       expect(results).toEqual(expected);
 
-      expect(spyGetCurrentBudgets).toHaveBeenCalledTimes(1);
-      expect(spyGetCurrentBudgets).toHaveBeenCalledWith([1, 2, 3]);
+      expect(spies.getCurrentBudgets).toHaveBeenCalledTimes(1);
+      expect(spies.getCurrentBudgets).toHaveBeenCalledWith([1, 2, 3]);
 
-      expect(spyGetBudgetSpends).toHaveBeenCalledTimes(1);
-      expect(spyGetBudgetSpends).toHaveBeenCalledWith([1, 2, 3]);
+      expect(spies.getBudgetSpends).toHaveBeenCalledTimes(1);
+      expect(spies.getBudgetSpends).toHaveBeenCalledWith([1, 2, 3]);
     });
 
     test('checkpoint-triggering processor calls multiple scalar fns', async () => {
-      async function noop(arr: number[]) {
-        return new Map(arr.map((id) => [id, id]));
-      }
-      const noopMock1 = jest.fn(noop);
-      const noopMock2 = jest.fn(noop);
-      const registry = balar.wrap.fns({
-        noop1: noopMock1,
-        noop2: noopMock2,
-      });
-
       // Act
       const budgetIds = [1, 2, 3, 4];
-      const issues = await balar.run(budgetIds, async (n) => {
-        let p1 = registry.noop1(n);
+      const { successes: issues } = await balar.run(budgetIds, async (n) => {
+        let p1 = registry.identity1(n);
         let p2: Promise<number | undefined> = Promise.resolve(0);
 
         if (n >= 3) {
-          p2 = registry.noop2(n);
+          p2 = registry.identity2(n);
         }
 
         const [one, two] = await Promise.all([p1, p2]);
@@ -680,10 +682,10 @@ describe('tests', () => {
       ]);
       expect(issues).toEqual(expected);
 
-      expect(noopMock1).toHaveBeenCalledTimes(1);
-      expect(noopMock1).toHaveBeenCalledWith([1, 2, 3, 4]);
-      expect(noopMock2).toHaveBeenCalledTimes(1);
-      expect(noopMock2).toHaveBeenCalledWith([3, 4]);
+      expect(spies.identity1).toHaveBeenCalledTimes(1);
+      expect(spies.identity1).toHaveBeenCalledWith([1, 2, 3, 4]);
+      expect(spies.identity2).toHaveBeenCalledTimes(1);
+      expect(spies.identity2).toHaveBeenCalledWith([3, 4]);
     });
   });
 
@@ -691,7 +693,7 @@ describe('tests', () => {
     test('should not deduplicate equal inputs to bulk fn (not in scope)', async () => {
       // Act
       const requestIds = [1, 2, 3]; // all budgets are under the same account
-      const issues = await balar.run(
+      const { successes: issues } = await balar.run(
         requestIds,
         async function processor(budgetId: number) {
           const budget = await registry.getCurrentBudgets(budgetId);
@@ -708,32 +710,38 @@ describe('tests', () => {
       ]);
       expect(issues).toEqual(expected);
 
-      expect(spyGetCurrentBudgets).toHaveBeenCalledTimes(1);
-      expect(spyGetCurrentBudgets).toHaveBeenCalledWith(requestIds);
-      expect(spyGetAccountsById).toHaveBeenCalledWith([1, 1, 1]);
-      expect(spyGetAccountsById).toHaveBeenCalledTimes(1);
+      expect(spies.getCurrentBudgets).toHaveBeenCalledTimes(1);
+      expect(spies.getCurrentBudgets).toHaveBeenCalledWith(requestIds);
+      expect(spies.getAccountsById).toHaveBeenCalledWith([1, 1, 1]);
+      expect(spies.getAccountsById).toHaveBeenCalledTimes(1);
     });
   });
 
   describe('exceptions', () => {
-    test('should bubble up exception thrown directly inside processor', async () => {
+    test('should collect exceptions thrown inside processor', async () => {
       // Act
-      const runCall = () =>
-        balar.run(
-          [1, 2, 777],
-          async function getBudgetOrThrowIfNotExist(id: number): Promise<number> {
-            const currentBudget = await registry.getCurrentBudgets(id);
-            if (currentBudget === undefined) {
-              throw new Error('budget does not exist');
-            }
+      const { successes, errors } = await balar.run(
+        [1, 2, 777 /* does not exist */],
+        async function getBudgetOrThrowIfNotExist(id: number): Promise<number> {
+          const currentBudget = await registry.getCurrentBudgets(id);
+          if (currentBudget === undefined) {
+            throw new Error('budget does not exist');
+          }
 
-            return currentBudget.amount;
-          },
-        );
+          return currentBudget.amount;
+        },
+      );
 
       // Assert
-      await expect(runCall).rejects.toThrow('budget does not exist');
-      expect(spyGetCurrentBudgets).toHaveBeenCalledTimes(1);
+      // await expect(runCall).rejects.toThrow('budget does not exist');
+      expect(spies.getCurrentBudgets).toHaveBeenCalledTimes(1);
+      expect(errors).toEqual(new Map([[777, new Error('budget does not exist')]]));
+      expect(successes).toEqual(
+        new Map([
+          [1, 500],
+          [2, 1000],
+        ]),
+      );
     });
 
     test('should bubble up exception thrown inside bulk fn', async () => {
@@ -749,53 +757,57 @@ describe('tests', () => {
       });
 
       const registry = balar.wrap.fns({
-        mayThrow: mayThrow,
+        mayThrow,
       });
 
       // Act
-      const runCall = () =>
-        balar.run([1, 2, 777], async function (id: number) {
-          return registry.mayThrow(id);
-        });
+      const { successes, errors } = await balar.run(
+        [1, 2, 777],
+        async function (id: number) {
+          try {
+            return await registry.mayThrow(id);
+          } catch (err: unknown) {
+            return (err as Error).message;
+          }
+        },
+      );
 
       // Assert
-      await expect(runCall).rejects.toThrow('budget does not exist');
       expect(mayThrow).toHaveBeenCalledTimes(1);
       expect(mayThrow).toHaveBeenCalledWith([1, 2, 777]);
+      // Errors were caught and returned => exposed as success
+      expect(errors).toEqual(new Map());
+      expect(successes).toEqual(
+        new Map([
+          [1, 'budget does not exist'],
+          [2, 'budget does not exist'],
+          [777, 'budget does not exist'],
+        ]),
+      );
     });
   });
 
   describe('branching', () => {
     test('simple branching', async () => {
-      // Arrange
-      async function noop(arr: number[]) {
-        return new Map(arr.map((id) => [id, id]));
-      }
-
-      const noopEven = jest.fn(noop);
-      const noopOdd = jest.fn(noop);
-
-      const registry = balar.wrap.fns({
-        noopEven: noopEven,
-        noopOdd: noopOdd,
-      });
-
       // Act
-      const result = await balar.run([1, 2, 3, 4], async function (id: number) {
-        const result = await (() => {
-          if (id % 2 === 0) {
-            return registry.noopEven(id);
-          } else {
-            return registry.noopOdd(id);
-          }
-        })();
+      const { successes: result } = await balar.run(
+        [1, 2, 3, 4],
+        async function (id: number) {
+          const result = await (() => {
+            if (id % 2 === 0) {
+              return registry.identity1(id);
+            } else {
+              return registry.identity2(id);
+            }
+          })();
 
-        return result;
-      });
+          return result;
+        },
+      );
 
       // Assert
-      expect(noopEven).toHaveBeenNthCalledWith(1, [2, 4]);
-      expect(noopOdd).toHaveBeenNthCalledWith(1, [1, 3]);
+      expect(spies.identity1).toHaveBeenNthCalledWith(1, [2, 4]);
+      expect(spies.identity2).toHaveBeenNthCalledWith(1, [1, 3]);
       expect(result).toEqual(
         new Map([
           [1, 1],
@@ -807,34 +819,28 @@ describe('tests', () => {
     });
 
     test('scalar vs nested run', async () => {
-      // Arrange
-      async function noop(arr: number[]) {
-        return new Map(arr.map((id) => [id, id]));
-      }
-
-      const noopMock = jest.fn(noop);
-
-      const registry = balar.wrap.fns({
-        noop: noopMock,
-      });
-
       // Act
-      const result = await balar.run([1, 2, 3, 4], async function (id: number) {
-        const result = await (() => {
-          if (id % 2 === 0) {
-            return registry.noop(id);
-          } else {
-            return balar.run([id * 10, id * 100], (id) => registry.noop(id));
-          }
-        })();
+      const { successes: result } = await balar.run(
+        [1, 2, 3, 4],
+        async function (id: number) {
+          const result = await (async () => {
+            if (id % 2 === 0) {
+              return registry.identity(id);
+            } else {
+              return balar
+                .run([id * 10, id * 100], (id) => registry.identity(id))
+                .then((res) => res.successes);
+            }
+          })();
 
-        return typeof result === 'number' ? result : [...result!.values()];
-      });
+          return typeof result === 'number' ? result : [...result!.values()];
+        },
+      );
 
       // Assert
-      expect(noopMock).toHaveBeenNthCalledWith(1, [2, 4]);
-      expect(noopMock).toHaveBeenNthCalledWith(2, [10, 100, 30, 300]);
-      expect(noopMock).toHaveBeenCalledTimes(2);
+      expect(spies.identity).toHaveBeenNthCalledWith(1, [2, 4]);
+      expect(spies.identity).toHaveBeenNthCalledWith(2, [10, 100, 30, 300]);
+      expect(spies.identity).toHaveBeenCalledTimes(2);
 
       expect(result).toEqual(
         new Map<number, number | number[]>([
@@ -847,24 +853,8 @@ describe('tests', () => {
     });
 
     test('binary search', async () => {
-      // Arrange
-      async function lt(arr: number[], num: number) {
-        return new Map(arr.map((id) => [id, id < num]));
-      }
-      async function gt(arr: number[], num: number) {
-        return new Map(arr.map((id) => [id, id > num]));
-      }
-
-      const spyLt = jest.fn(lt);
-      const spyGt = jest.fn(gt);
-
-      const registry = balar.wrap.fns({
-        lt: spyLt,
-        gt: spyGt,
-      });
-
       // Act
-      const result = await balar.run(
+      const { successes: result } = await balar.run(
         [0, 1, 2, 3, 4, 5, 6, 7, 8],
         async function search(id: number) {
           if (await registry.lt(id, 5)) {
@@ -885,18 +875,18 @@ describe('tests', () => {
       );
 
       // Assert
-      expect(spyLt).toHaveBeenCalledWith([0, 1, 2, 3, 4, 5, 6, 7, 8], 5);
+      expect(spies.lt).toHaveBeenCalledWith([0, 1, 2, 3, 4, 5, 6, 7, 8], 5);
 
-      expect(spyGt).toHaveBeenCalledWith([0, 1, 2, 3, 4], 2);
-      expect(spyLt).toHaveBeenCalledWith([0, 1, 2], 3);
+      expect(spies.gt).toHaveBeenCalledWith([0, 1, 2, 3, 4], 2);
+      expect(spies.lt).toHaveBeenCalledWith([0, 1, 2], 3);
 
-      expect(spyLt).toHaveBeenCalledWith([5, 6, 7, 8], 9);
+      expect(spies.lt).toHaveBeenCalledWith([5, 6, 7, 8], 9);
 
-      expect(spyGt).toHaveBeenCalledWith([5, 6, 7, 8], 6);
-      expect(spyLt).toHaveBeenCalledWith([5, 6], 7);
+      expect(spies.gt).toHaveBeenCalledWith([5, 6, 7, 8], 6);
+      expect(spies.lt).toHaveBeenCalledWith([5, 6], 7);
 
-      expect(spyLt).toHaveBeenCalledTimes(4);
-      expect(spyGt).toHaveBeenCalledTimes(2);
+      expect(spies.lt).toHaveBeenCalledTimes(4);
+      expect(spies.gt).toHaveBeenCalledTimes(2);
 
       expect(result).toEqual(
         new Map(
@@ -908,7 +898,7 @@ describe('tests', () => {
     });
   });
 
-  describe('nested contexts', () => {
+  describe('nested scopes', () => {
     beforeEach(() => {
       budgetsRepo.spendOnBudget(1, 100);
       budgetsRepo.spendOnBudget(1, 100);
@@ -917,9 +907,9 @@ describe('tests', () => {
       budgetsRepo.spendOnBudget(5, 6);
     });
 
-    test('1-level nested run() context should sync with concurrent executions at 0th level', async () => {
+    test('1-level deep scope should sync input processors at 0th level', async () => {
       // Act/Assert
-      const result = await balar.run(
+      const { successes: result } = await balar.run(
         [accountId1, accountId2],
         async function getSpendOfAccount(accountId) {
           const account = await registry.getAccountsById(accountId);
@@ -927,7 +917,7 @@ describe('tests', () => {
             return null;
           }
 
-          const spends = await balar.run(account.budgetIds, (budgetId) =>
+          const { successes: spends } = await balar.run(account.budgetIds, (budgetId) =>
             registry.getBudgetSpends(budgetId).then((s) => s!),
           );
 
@@ -935,11 +925,11 @@ describe('tests', () => {
         },
       );
 
-      expect(spyGetAccountsById).toHaveBeenCalledTimes(1);
-      expect(spyGetAccountsById).toHaveBeenCalledWith([accountId1, accountId2]);
+      expect(spies.getAccountsById).toHaveBeenCalledTimes(1);
+      expect(spies.getAccountsById).toHaveBeenCalledWith([accountId1, accountId2]);
 
-      expect(spyGetBudgetSpends).toHaveBeenCalledTimes(1);
-      expect(spyGetBudgetSpends).toHaveBeenCalledWith([1, 2, 3, 4, 5, 6]);
+      expect(spies.getBudgetSpends).toHaveBeenCalledTimes(1);
+      expect(spies.getBudgetSpends).toHaveBeenCalledWith([1, 2, 3, 4, 5, 6]);
 
       const expected = new Map([
         [accountId1, 201],
@@ -948,45 +938,48 @@ describe('tests', () => {
       expect(result).toEqual(expected);
     });
 
-    test('multiple nesting levels with processing before and after nestings', async () => {
-      // Arrange
-      const noop2 = jest.fn(async (arr: number[]) => new Map(arr.map((id) => [id, id])));
-      const registry = balar.wrap.fns({
-        noop1: async (arr: number[]) => new Map(arr.map((id) => [id, id])),
-        noop2: noop2,
-      });
-
+    test('multiple scope nesting levels with processing before and after nestings', async () => {
       // Act
-      const result = await balar.run([10, 15, 30], async function (a: number) {
-        await registry.noop1(a);
+      const { successes: result } = await balar.run(
+        [10, 15, 30],
+        async function (a: number) {
+          await registry.identity1(a);
 
-        const result = await balar.run([a + 1, a + 11], async (b) => {
-          if (b % 2 === 0) {
-            return -1;
-          }
+          const result = await balar
+            .run([a + 1, a + 11], async (b) => {
+              if (b % 2 === 0) {
+                return -1;
+              }
 
-          await Promise.all([registry.noop1(b), registry.noop2(b)]);
+              await Promise.all([registry.identity1(b), registry.identity2(b)]);
 
-          const result = await balar.run([b + 1, b + 11], async (c: number) => {
-            const [one, two] = [registry.noop1(c), registry.noop2(c)];
-            await two;
-            await one;
+              const result = await balar
+                .run([b + 1, b + 11], async (c: number) => {
+                  const [one, two] = [registry.identity1(c), registry.identity2(c)];
+                  await two;
+                  await one;
 
-            return c;
-          });
+                  return c;
+                })
+                .then((res) => res.successes);
 
+              return [...result.values()];
+            })
+            .then((res) => res.successes);
+
+          await registry.identity2(a);
           return [...result.values()];
-        });
-
-        await registry.noop2(a);
-        return [...result.values()];
-      });
+        },
+      );
 
       // Assert
-      expect(noop2).toHaveBeenCalledTimes(3);
-      expect(noop2).toHaveBeenNthCalledWith(1, [11, 21, 31, 41]);
-      expect(noop2).toHaveBeenNthCalledWith(2, [12, 22, 22, 32, 32, 42, 42, 52]);
-      expect(noop2).toHaveBeenNthCalledWith(3, [10, 15, 30]);
+      expect(spies.identity2).toHaveBeenCalledTimes(3);
+      expect(spies.identity2).toHaveBeenNthCalledWith(1, [11, 21, 31, 41]);
+      expect(spies.identity2).toHaveBeenNthCalledWith(
+        2,
+        [12, 22, 22, 32, 32, 42, 42, 52],
+      );
+      expect(spies.identity2).toHaveBeenNthCalledWith(3, [10, 15, 30]);
       expect(result).toEqual(
         new Map<number, (number[] | -1)[]>([
           [
@@ -1008,9 +1001,9 @@ describe('tests', () => {
       );
     });
 
-    test('return from level-1 nested run() context should restore level-0 context syncing', async () => {
+    test('return from level-1 scope should restore level-0 scope syncing', async () => {
       // Act/Assert
-      const result = await balar.run(
+      const { successes: result } = await balar.run(
         [accountId1, accountId2],
         async function getSpendOfAccount(accountId) {
           const account = await registry.getAccountsById(accountId);
@@ -1019,7 +1012,7 @@ describe('tests', () => {
           }
 
           // Run nested run() context
-          const spends = await balar.run(account.budgetIds, (budgetId) =>
+          const { successes: spends } = await balar.run(account.budgetIds, (budgetId) =>
             registry.getBudgetSpends(budgetId),
           );
 
@@ -1035,14 +1028,14 @@ describe('tests', () => {
         },
       );
 
-      expect(spyGetAccountsById).toHaveBeenCalledTimes(1);
-      expect(spyGetAccountsById).toHaveBeenCalledWith([accountId1, accountId2]);
+      expect(spies.getAccountsById).toHaveBeenCalledTimes(1);
+      expect(spies.getAccountsById).toHaveBeenCalledWith([accountId1, accountId2]);
 
-      expect(spyGetBudgetSpends).toHaveBeenCalledTimes(1);
-      expect(spyGetBudgetSpends).toHaveBeenCalledWith([1, 2, 3, 4, 5, 6]);
+      expect(spies.getBudgetSpends).toHaveBeenCalledTimes(1);
+      expect(spies.getBudgetSpends).toHaveBeenCalledWith([1, 2, 3, 4, 5, 6]);
 
-      expect(spyGetCurrentBudgets).toHaveBeenCalledTimes(1);
-      expect(spyGetCurrentBudgets).toHaveBeenCalledWith([1, 5]);
+      expect(spies.getCurrentBudgets).toHaveBeenCalledTimes(1);
+      expect(spies.getCurrentBudgets).toHaveBeenCalledWith([1, 5]);
 
       const expected = new Map([
         [accountId1, { accountId: accountId1, amount: 500 }], // budget 1
@@ -1063,14 +1056,14 @@ describe('tests', () => {
       return new Map(arr.map((id) => [id, id + two + three]));
     }
 
-    const spyBulkMul = jest.fn(bulkMul);
-    const spyBulkMulObj = jest.fn(bulkMulObj);
-    const spyBulkAdd3 = jest.fn(bulkAdd3);
+    const gulkMul = jest.fn(bulkMul);
+    const gulkMulObj = jest.fn(bulkMulObj);
+    const gulkAdd3 = jest.fn(bulkAdd3);
 
     const registry = balar.wrap.fns({
-      mul: spyBulkMul,
-      mulObj: spyBulkMulObj,
-      add3: spyBulkAdd3,
+      mul: gulkMul,
+      mulObj: gulkMulObj,
+      add3: gulkAdd3,
     });
 
     beforeEach(() => {
@@ -1080,7 +1073,7 @@ describe('tests', () => {
     test('bulk fn with extended arglist', async () => {
       // Act
       const budgetIds = [1, 2, 3, 4];
-      const issues = await balar.run(budgetIds, async (n) => {
+      const { successes: issues } = await balar.run(budgetIds, async (n) => {
         return n % 2 === 0 ? registry.mul(n, 2) : registry.mul(n, 3);
       });
 
@@ -1092,15 +1085,15 @@ describe('tests', () => {
         [4, 8],
       ]);
       expect(issues).toEqual(expected);
-      expect(spyBulkMul).toHaveBeenCalledTimes(2);
-      expect(spyBulkMul).toHaveBeenCalledWith([1, 3], 3);
-      expect(spyBulkMul).toHaveBeenCalledWith([2, 4], 2);
+      expect(gulkMul).toHaveBeenCalledTimes(2);
+      expect(gulkMul).toHaveBeenCalledWith([1, 3], 3);
+      expect(gulkMul).toHaveBeenCalledWith([2, 4], 2);
     });
 
     test('extra object arg with default args hash resolver', async () => {
       // Act
       const budgetIds = [1, 2, 3, 4];
-      const issues = await balar.run(budgetIds, async (n) => {
+      const { successes: issues } = await balar.run(budgetIds, async (n) => {
         return n % 2 === 0
           ? registry.mulObj(n, { rhs: 2 })
           : registry.mulObj(n, { rhs: 3 });
@@ -1114,43 +1107,34 @@ describe('tests', () => {
         [4, 8],
       ]);
       expect(issues).toEqual(expected);
-      expect(spyBulkMulObj).toHaveBeenCalledTimes(2);
-      expect(spyBulkMulObj).toHaveBeenCalledWith([1, 3], { rhs: 3 });
-      expect(spyBulkMulObj).toHaveBeenCalledWith([2, 4], { rhs: 2 });
+      expect(gulkMulObj).toHaveBeenCalledTimes(2);
+      expect(gulkMulObj).toHaveBeenCalledWith([1, 3], { rhs: 3 });
+      expect(gulkMulObj).toHaveBeenCalledWith([2, 4], { rhs: 2 });
     });
   });
 
   describe('control flow', () => {
     describe('if', () => {
-      const noop = jest.fn(async (n: number[]) => new Map(n.map((id) => [id, id])));
-      const sideEffect = jest.fn(async (n: number[]) => new Map(n.map((id) => [id, id])));
-      const triple = jest.fn(async (n: number[]) => new Map(n.map((id) => [id, id * 3])));
-      const reg = balar.wrap.fns({
-        noop,
-        sideEffect,
-        triple,
-      });
-
       test('as side effect', async () => {
         // Act
         await balar.run([1, 2, 3, 4], async (n) => {
-          await balar.if(n % 2 === 0, () => reg.sideEffect(n));
+          await balar.if(n % 2 === 0, () => registry.noop(n));
 
-          return reg.noop(n);
+          return registry.identity(n);
         });
 
         // Assert
-        expect(sideEffect).toHaveBeenCalledTimes(1);
-        expect(sideEffect).toHaveBeenCalledWith([2, 4]);
-        expect(noop).toHaveBeenCalledTimes(1);
-        expectToHaveBeenCalledWithUnordered(noop, [1, 2, 3, 4]);
+        expect(spies.noop).toHaveBeenCalledTimes(1);
+        expect(spies.noop).toHaveBeenCalledWith([2, 4]);
+        expect(spies.identity).toHaveBeenCalledTimes(1);
+        expectToHaveBeenCalledWithUnordered(spies.identity, [1, 2, 3, 4]);
       });
 
       test('as expr', async () => {
         // Act
-        const result = await balar.run([1, 2, 3, 4], async (n) => {
-          const tripled = await balar.if(n % 2 === 0, () => reg.triple(n));
-          const same = reg.noop(n);
+        const { successes: result } = await balar.run([1, 2, 3, 4], async (n) => {
+          const tripled = await balar.if(n % 2 === 0, () => registry.mul(n, 3));
+          const same = registry.identity(n);
 
           return tripled ?? same;
         });
@@ -1164,19 +1148,19 @@ describe('tests', () => {
         ]);
         expect(result).toEqual(expected);
 
-        expect(triple).toHaveBeenCalledTimes(1);
-        expect(triple).toHaveBeenCalledWith([2, 4]);
+        expect(spies.mul).toHaveBeenCalledTimes(1);
+        expect(spies.mul).toHaveBeenCalledWith([2, 4], 3);
 
-        expect(noop).toHaveBeenCalledTimes(1);
-        expectToHaveBeenCalledWithUnordered(noop, [1, 2, 3, 4]);
+        expect(spies.identity).toHaveBeenCalledTimes(1);
+        expectToHaveBeenCalledWithUnordered(spies.identity, [1, 2, 3, 4]);
       });
 
       test('concurrent if + bulk fn', async () => {
         // Act
-        const result = await balar.run([1, 2, 3, 4], async (n) => {
+        const { successes: result } = await balar.run([1, 2, 3, 4], async (n) => {
           const [tripled, same] = await Promise.all([
-            balar.if(n % 2 === 0, () => reg.triple(n)),
-            reg.noop(n),
+            balar.if(n % 2 === 0, () => registry.mul(n, 3)),
+            registry.identity(n),
           ]);
 
           return tripled ?? same;
@@ -1191,21 +1175,21 @@ describe('tests', () => {
         ]);
         expect(result).toEqual(expected);
 
-        expect(triple).toHaveBeenCalledTimes(1);
-        expect(triple).toHaveBeenCalledWith([2, 4]);
-        expect(noop).toHaveBeenCalledTimes(1);
-        expectToHaveBeenCalledWithUnordered(noop, [1, 2, 3, 4]);
+        expect(spies.mul).toHaveBeenCalledTimes(1);
+        expect(spies.mul).toHaveBeenCalledWith([2, 4], 3);
+        expect(spies.identity).toHaveBeenCalledTimes(1);
+        expectToHaveBeenCalledWithUnordered(spies.identity, [1, 2, 3, 4]);
       });
 
       test('if / else', async () => {
         // Act
-        const result = await balar.run([1, 2, 3, 4], async (n) => {
+        const { successes: result } = await balar.run([1, 2, 3, 4], async (n) => {
           return balar
             .if(n % 2 === 0, () => {
-              return reg.triple(n);
+              return registry.mul(n, 3);
             })
             .else(() => {
-              return reg.noop(n);
+              return registry.identity(n);
             });
         });
 
@@ -1218,22 +1202,22 @@ describe('tests', () => {
         ]);
         expect(result).toEqual(expected);
 
-        expect(triple).toHaveBeenCalledTimes(1);
-        expect(triple).toHaveBeenCalledWith([2, 4]);
-        expect(noop).toHaveBeenCalledTimes(1);
-        expect(noop).toHaveBeenCalledWith([1, 3]);
+        expect(spies.mul).toHaveBeenCalledTimes(1);
+        expect(spies.mul).toHaveBeenCalledWith([2, 4], 3);
+        expect(spies.identity).toHaveBeenCalledTimes(1);
+        expect(spies.identity).toHaveBeenCalledWith([1, 3]);
       });
 
       test('try / catch / finally', async () => {
         // Act
-        const result = await balar.run([1, 2, 3, 4], async (n) => {
+        const { successes: result } = await balar.run([1, 2, 3, 4], async (n) => {
           try {
             return await balar
               .if(n % 2 === 0, () => {
                 throw n * 3;
               })
               .else(() => {
-                return reg.noop(n);
+                return registry.identity(n);
               });
           } catch (val: unknown) {
             return val;
@@ -1245,7 +1229,7 @@ describe('tests', () => {
           [1, 1],
           [2, 6],
           [3, 3],
-          [4, 6],
+          [4, 12],
         ]);
         expect(result).toEqual(expected);
       });
@@ -1255,24 +1239,20 @@ describe('tests', () => {
   describe('concurrency', () => {
     test('configure max concurrency', async () => {
       // Arrange
-      const mock = jest.fn(async (n: number[]) => new Map(n.map((id) => [id, id])));
-      const reg = balar.wrap.fns({
-        noop: mock,
-      });
 
       // Act
       await balar.run(
         [1, 2, 3, 4],
         async (n) => {
-          await reg.noop(n);
+          await registry.identity(n);
         },
         { concurrency: 2 },
       );
 
       // Assert
-      expect(mock).toHaveBeenCalledTimes(2);
-      expect(mock).toHaveBeenNthCalledWith(1, [1, 2]);
-      expect(mock).toHaveBeenNthCalledWith(2, [3, 4]);
+      expect(spies.identity).toHaveBeenCalledTimes(2);
+      expect(spies.identity).toHaveBeenNthCalledWith(1, [1, 2]);
+      expect(spies.identity).toHaveBeenNthCalledWith(2, [3, 4]);
     });
   });
 });

@@ -1,5 +1,4 @@
 import { EXECUTION, NO_OP_PROCESSOR, PROCESSOR_ID } from './constants';
-import { run } from './execution';
 
 type IfThenable<T> = PromiseLike<T> & {
   then: typeof Promise.prototype.then;
@@ -33,18 +32,18 @@ export function _if<T>(
   process.nextTick(() => {
     if (!elseCalled) {
       // Add no-op processors to fill the count and trigger checkpoint
-      execution.runNested([idFalse], NO_OP_PROCESSOR, 0).catch(() => {
-        // Silence on throw for true branch processors as they will share
-        // the same cached promise in the checkpoint
-        // TODO: this can be removed once scope partitioning is implemented
-      });
+      execution.runNested([idFalse], NO_OP_PROCESSOR, 0);
     }
   });
 
   const trueResult = condition
-    ? execution
-        .runNested([idTrue], processorFn, 1 /* true */)
-        .then((res) => res.get(idTrue))
+    ? execution.runNested([idTrue], processorFn, 1 /* true */).then((res) => {
+        if (res.errors.has(idTrue)) {
+          // Rethrow to bubble up the scope stack
+          throw res.errors.get(idTrue);
+        }
+        return res.successes.get(idTrue);
+      })
     : execution.awaitNextScopeResolution();
 
   return {
@@ -63,7 +62,13 @@ export function _if<T>(
 
       const falseResult = execution
         .runNested([idFalse], elseProcessorFn, 0 /* false */)
-        .then((res) => res.get(idFalse));
+        .then((res) => {
+          if (res.errors.has(idFalse)) {
+            // Rethrow to bubble up the scope stack
+            throw res.errors.get(idFalse);
+          }
+          return res.successes.get(idFalse);
+        });
       return falseResult;
     },
   };

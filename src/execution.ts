@@ -5,7 +5,8 @@ import {
   ScopeOperation,
   DeferredPromise,
 } from './api';
-import { DEFAULT_AWAITER, EXECUTION, PROCESSOR_ID } from './constants';
+import { DEFAULT_SCOPE_PARTITION_KEY, EXECUTION, PROCESSOR_ID } from './constants';
+import { BalarError, Result } from './primitives';
 import { chunk } from './utils';
 
 /**
@@ -61,15 +62,14 @@ export async function run<In, Out>(
   inputs: In[],
   processor: (request: In) => Promise<Out>,
   opts: ExecutionOptions = {},
-): Promise<Map<In, Out>> {
+): Promise<Result<In, Out>> {
   const execution = EXECUTION.getStore();
 
   if (!execution) {
     return new BalarExecution(processor, opts).run(inputs);
   }
 
-  // TODO: pick default partition key
-  return execution.runNested(inputs, processor, -1);
+  return execution.runNested(inputs, processor, DEFAULT_SCOPE_PARTITION_KEY);
 }
 
 export class BalarExecution<MainIn, MainOut> {
@@ -116,8 +116,8 @@ export class BalarExecution<MainIn, MainOut> {
     return scopeSyncMetadata;
   }
 
-  initDeferredPromise(): DeferredPromise<Map<unknown, unknown>> {
-    const call: DeferredPromise<Map<unknown, unknown>> = {
+  initDeferredPromise<T>(): DeferredPromise<T> {
+    const call: DeferredPromise<T> = {
       resolve: () => {},
       reject: () => {},
       cachedPromise: null,
@@ -131,23 +131,34 @@ export class BalarExecution<MainIn, MainOut> {
     return call;
   }
 
-  async run(requests: MainIn[]): Promise<Map<MainIn, MainOut>> {
+  async run(requests: MainIn[]): Promise<Result<MainIn, MainOut>> {
     this.logger?.('starting execution for requests: ', requests);
 
-    const resultByInput = new Map<MainIn, MainOut>();
+    const successes = new Map<MainIn, MainOut>();
+    const errors = new Map<MainIn, unknown>();
 
     await EXECUTION.run(this as BalarExecution<unknown, unknown>, async () => {
       for (const requestsBatch of chunk(requests, this.maxConcurrency)) {
         this.logger?.('starting execution for request batch: ', requestsBatch);
 
-        const batchResults = await Promise.all(this.runBatch(requestsBatch));
+        const batchResults = await Promise.allSettled(this.runBatch(requestsBatch));
+
         for (let i = 0; i < batchResults.length; i += 1) {
-          resultByInput.set(requestsBatch[i], batchResults[i]);
+          const batchResult = batchResults[i];
+          if (batchResult.status === 'fulfilled') {
+            successes.set(requestsBatch[i], batchResult.value);
+          } else {
+            if (batchResult.reason instanceof BalarError) {
+              // Only balar errors are expected to bubble up
+              throw batchResult.reason;
+            }
+            errors.set(requestsBatch[i], batchResult.reason);
+          }
         }
       }
     });
 
-    return resultByInput;
+    return { successes, errors };
   }
 
   private runBatch(requestBatch: MainIn[]): Promise<MainOut>[] {
@@ -196,8 +207,8 @@ export class BalarExecution<MainIn, MainOut> {
 
         plan
           .run(scopeSyncPartition!.input)
-          .then((allResults) => scopeSyncPartition.call?.resolve(allResults))
-          .catch((err) => scopeSyncPartition.call?.reject(err));
+          .then((allResults) => scopeSyncPartition.call?.resolve(allResults));
+        // Scope calls are not expected to throw (errors reported in the result)
       }
 
       // Prevent next scope calls in same stack frame to schedule redundant checkpoint
@@ -231,7 +242,7 @@ export class BalarExecution<MainIn, MainOut> {
     requests: In[],
     processor: (request: In) => Promise<Out>,
     partitionKey: number,
-  ) {
+  ): Promise<Result<In, Out>> {
     const processorId = PROCESSOR_ID.getStore();
     if (processorId == null) {
       throw new Error('balar error: missing processor ID');
@@ -255,11 +266,20 @@ export class BalarExecution<MainIn, MainOut> {
       process.nextTick(() => this.executeCheckpoint());
     }
 
-    const allResults = (await scopeSyncPartition.call?.cachedPromise) as Map<In, Out>;
+    const allResults = (await scopeSyncPartition.call?.cachedPromise) as Result<In, Out>;
 
-    const result = new Map<In, Out>();
+    const result = {
+      successes: new Map<In, Out>(),
+      errors: new Map<In, unknown>(),
+    };
+
     for (const req of requests) {
-      result.set(req, allResults.get(req)!);
+      if (allResults.successes.has(req)) {
+        result.successes.set(req, allResults.successes.get(req)!);
+      }
+      if (allResults.errors.has(req)) {
+        result.errors.set(req, allResults.errors.get(req)!);
+      }
     }
 
     return result;

@@ -10,6 +10,7 @@ import {
 import { EXECUTION } from './constants';
 import { getMethodsOfClassObject } from './utils';
 import hash from 'object-hash';
+import { BalarError } from './primitives';
 
 /**
  * Creates a wrapper for a set of bulk functions. The wrapper can be used in balar execution contexts (e.g. inside the `processorFn` provided to `balar.execute(inputs, processorFn)`). When a wrapped function is called inside `balar.run()`, inputs are collected across all executions of the processor function so that a single call to the underlying bulk method is performed.
@@ -36,7 +37,7 @@ export function fns<R extends Record<string, any>>(
   bulkFunctions: AssertBulkRecord<R>,
 ): Facade<R> {
   if (EXECUTION.getStore()) {
-    throw new Error(
+    throw new BalarError(
       'balar error: unexpected call to `balar.wrap.fns()` inside a balar execution context, please define your balar wrapper in advance and share it across processor function executions to produce the intended behaviour.',
     );
   }
@@ -96,7 +97,7 @@ export function object<
   E extends BulkMethods<O> & string = never,
 >(object: O, opts: { pick?: P[]; exclude?: E[] } = {}): ObjectFacade<O, P, E> {
   if (EXECUTION.getStore()) {
-    throw new Error(
+    throw new BalarError(
       'balar error: unexpected call to `balar.wrap.object()` inside a balar execution context, please define your balar wrapper in advance and share it across processor function executions to produce the intended behaviour.',
     );
   }
