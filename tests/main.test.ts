@@ -785,6 +785,35 @@ describe('tests', () => {
         ]),
       );
     });
+
+    test('throwing in 1 processor should not disrupt others', async () => {
+      // Act
+      const { successes, errors } = await balar.run(
+        [1, 2, 3, 4],
+        async function (id: number) {
+          if (id % 2 === 0) {
+            throw 'even';
+          }
+
+          await registry.noop(id);
+          return registry.identity(id);
+        },
+      );
+
+      // Assert
+      expect(errors).toEqual(
+        new Map([
+          [2, 'even'],
+          [4, 'even'],
+        ]),
+      );
+      expect(successes).toEqual(
+        new Map([
+          [1, 1],
+          [3, 3],
+        ]),
+      );
+    });
   });
 
   describe('branching', () => {
@@ -1236,15 +1265,16 @@ describe('tests', () => {
 
       test('concurrent if', async () => {
         // Act
-        const { successes: result } = await balar.run([1, 2, 3, 4], async (n) => {
-          const [tripled, doubled] = await Promise.all([
-            balar.if(n % 2 === 0, () => registry.mul(n, 3)),
-            balar.if(n % 2 === 0, () => registry.mul(n, 2)),
-          ]);
-          console.log({ n, tripled, doubled });
+        const result = await balar
+          .run([1, 2, 3, 4], async (n) => {
+            const [tripled, doubled] = await Promise.all([
+              balar.if(n % 2 === 0, () => registry.mul(n, 3)),
+              balar.if(n % 2 === 0, () => registry.mul(n, 2)),
+            ]);
 
-          return tripled ?? doubled;
-        });
+            return tripled ?? doubled;
+          })
+          .then((res) => res.successes);
 
         // Assert
         const expected = new Map([
@@ -1252,6 +1282,46 @@ describe('tests', () => {
           [2, 6],
           [3, undefined],
           [4, 12],
+        ]);
+        expect(result).toEqual(expected);
+      });
+
+      test('always false if', async () => {
+        // Act
+        const result = await balar
+          .run([1, 2], async (n) => {
+            return balar.if(false, () => registry.identity(n));
+          })
+          .then((res) => res.successes);
+
+        // Assert
+        const expected = new Map([
+          [1, undefined],
+          [2, undefined],
+        ]);
+        expect(result).toEqual(expected);
+      });
+
+      test('binary search', async () => {
+        // Act
+        const result = await balar
+          .run([1, 2, 3, 4], async (n) => {
+            return balar
+              .if(n <= 2, async () => {
+                return balar.if(n > 1, async () => 2).else(async () => 1);
+              })
+              .else(() => {
+                return balar.if(n < 4, async () => 3).else(async () => 4);
+              });
+          })
+          .then((res) => res.successes);
+
+        // Assert
+        const expected = new Map([
+          [1, 1],
+          [2, 2],
+          [3, 3],
+          [4, 4],
         ]);
         expect(result).toEqual(expected);
       });

@@ -174,21 +174,25 @@ export class BalarExecution<MainIn, MainOut> {
     this.totalProcessors = requestBatch.length;
 
     return requestBatch.map(async (request, index) => {
-      const result = await PROCESSOR_ID.run(index, () => {
-        if (this.processor instanceof Map) {
-          return this.processor.get(request)!(request);
+      try {
+        const result = await PROCESSOR_ID.run(index, () => {
+          if (this.processor instanceof Map) {
+            return this.processor.get(request)!(request);
+          }
+          return this.processor(request);
+        });
+
+        this.logger?.('returned from processor execution for request input', request);
+        return result;
+      } catch (err: unknown) {
+        this.logger?.('throwed from processor execution for request input', request);
+        throw err;
+      } finally {
+        this.doneProcessors += 1;
+        if (this.awaitingProcessors.size + this.doneProcessors === this.totalProcessors) {
+          this.executeCheckpoint();
         }
-        return this.processor(request);
-      });
-
-      this.logger?.('returned from processor execution for request input', request);
-
-      this.doneProcessors += 1;
-      if (this.awaitingProcessors.size + this.doneProcessors === this.totalProcessors) {
-        this.executeCheckpoint();
       }
-
-      return result;
     });
   }
 
