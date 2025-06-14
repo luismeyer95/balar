@@ -1,4 +1,4 @@
-import { Result } from './result';
+import { Result } from './primitives';
 import { UnionPickAndExclude, ValueTypes } from './utils';
 
 export type ProcessorFn<In, Out> = (request: In) => Promise<Out>;
@@ -68,7 +68,7 @@ export type ScopeOperation<In, Out> = {
  */
 export type ExecutionOptions = {
   concurrency?: number;
-  logger?: (message: string) => void;
+  logger?: (...args: any[]) => void;
 };
 
 /**

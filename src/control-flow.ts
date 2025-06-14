@@ -1,8 +1,14 @@
 import { EXECUTION, NO_OP_PROCESSOR, PROCESSOR_ID } from './constants';
 
-type IfThenable<T> = PromiseLike<T> & {
-  then: typeof Promise.prototype.then;
-  catch: typeof Promise.prototype.catch;
+type IfThenable<T> = {
+  then<TResult1 = T, TResult2 = never>(
+    onfulfilled?: ((value: T) => TResult1 | PromiseLike<TResult1>) | null,
+    onrejected?: ((reason: unknown) => TResult2 | PromiseLike<TResult2>) | null,
+  ): Promise<TResult1 | TResult2>;
+
+  catch<TResult = never>(
+    onrejected?: ((reason: unknown) => TResult | PromiseLike<TResult>) | null,
+  ): Promise<T | TResult>;
   else: <U>(elseProcessorFn: () => Promise<U>) => Promise<T | U>;
 };
 
@@ -11,14 +17,8 @@ export function _if<T>(
   processorFn: () => Promise<T>,
 ): IfThenable<T | undefined> {
   const execution = EXECUTION.getStore();
-  if (!execution) {
-    throw new Error(
-      "balar error: calling control flow operator 'if' outside balar context",
-    );
-  }
-
   const id = PROCESSOR_ID.getStore();
-  if (id == null) {
+  if (id == null || !execution) {
     throw new Error(
       "balar error: calling control flow operator 'if' outside balar context",
     );
@@ -32,44 +32,42 @@ export function _if<T>(
   process.nextTick(() => {
     if (!elseCalled) {
       // Add no-op processors to fill the count and trigger checkpoint
-      execution.runNested([idFalse], NO_OP_PROCESSOR, 0);
+      execution.runScope([idFalse], NO_OP_PROCESSOR);
     }
   });
 
-  const trueResult = condition
-    ? execution.runNested([idTrue], processorFn, 1 /* true */).then((res) => {
+  const ifResult = condition
+    ? execution.runScope([idTrue], processorFn).then((res) => {
         if (res.errors.has(idTrue)) {
           // Rethrow to bubble up the scope stack
           throw res.errors.get(idTrue);
         }
         return res.successes.get(idTrue);
       })
-    : execution.awaitNextScopeResolution();
+    : execution.awaitScope();
 
   return {
     then(...args) {
-      return trueResult.then(...args);
+      return ifResult.then(...args);
     },
     catch(...args) {
-      return trueResult.catch(...args);
+      return ifResult.catch(...args);
     },
     else<U>(elseProcessorFn: () => Promise<U>) {
       elseCalled = true;
 
       if (condition) {
-        return trueResult;
+        return ifResult;
       }
 
-      const falseResult = execution
-        .runNested([idFalse], elseProcessorFn, 0 /* false */)
-        .then((res) => {
-          if (res.errors.has(idFalse)) {
-            // Rethrow to bubble up the scope stack
-            throw res.errors.get(idFalse);
-          }
-          return res.successes.get(idFalse);
-        });
-      return falseResult;
+      const elseResult = execution.runScope([idFalse], elseProcessorFn).then((res) => {
+        if (res.errors.has(idFalse)) {
+          // Rethrow to bubble up the scope stack
+          throw res.errors.get(idFalse);
+        }
+        return res.successes.get(idFalse);
+      });
+      return elseResult;
     },
   };
 }

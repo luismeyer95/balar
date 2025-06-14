@@ -5,8 +5,9 @@ import {
   ScopeOperation,
   DeferredPromise,
 } from './api';
-import { DEFAULT_SCOPE_PARTITION_KEY, EXECUTION, PROCESSOR_ID } from './constants';
+import { EXECUTION, PROCESSOR_ID } from './constants';
 import { BalarError, Result } from './primitives';
+import crypto from 'node:crypto';
 import { chunk } from './utils';
 
 /**
@@ -69,17 +70,23 @@ export async function run<In, Out>(
     return new BalarExecution(processor, opts).run(inputs);
   }
 
-  return execution.runNested(inputs, processor, DEFAULT_SCOPE_PARTITION_KEY);
+  return execution.runScope(inputs, processor);
 }
 
 export class BalarExecution<MainIn, MainOut> {
   checkpointCache: Map<string, BulkOperation<unknown, unknown, unknown[]>> = new Map();
+
   scopeSyncCache: Map<number, ScopeOperation<unknown, unknown>> = new Map();
+  // Tracks the number of scope registration calls made by each processor
+  // since the last checkpoint. Used to determine call order and assign
+  // the correct partition key when registering scopes
+  nextScopePartitionId: Map<number, number> = new Map();
 
   awaitingProcessors: Set<number> = new Set();
   doneProcessors = 0;
   totalProcessors = 0;
 
+  scopeId: string;
   maxConcurrency = Infinity;
   logger?: (...msgs: any[]) => void;
 
@@ -90,12 +97,13 @@ export class BalarExecution<MainIn, MainOut> {
     opts: ExecutionOptions,
   ) {
     this.processor = processor;
+    this.scopeId = crypto.randomBytes(6).toString('hex').substring(0, 4);
 
     if (opts.concurrency) {
       this.maxConcurrency = opts.concurrency;
     }
     if (opts.logger) {
-      this.logger = opts.logger;
+      this.logger = (...args) => opts.logger?.(`[${this.scopeId}] `, ...args);
     }
   }
 
@@ -213,6 +221,7 @@ export class BalarExecution<MainIn, MainOut> {
 
       // Prevent next scope calls in same stack frame to schedule redundant checkpoint
       this.scopeSyncCache.clear();
+      this.nextScopePartitionId.clear();
     }
 
     this.awaitingProcessors.clear();
@@ -238,15 +247,23 @@ export class BalarExecution<MainIn, MainOut> {
       .catch(bulkOp.call.reject);
   }
 
-  async runNested<In, Out>(
+  async runScope<In, Out>(
     requests: In[],
     processor: (request: In) => Promise<Out>,
-    partitionKey: number,
   ): Promise<Result<In, Out>> {
     const processorId = PROCESSOR_ID.getStore();
     if (processorId == null) {
-      throw new Error('balar error: missing processor ID');
+      throw new BalarError('balar error: missing processor ID');
     }
+
+    const partitionKey = this.nextScopePartitionId.get(processorId) ?? 0;
+    this.nextScopePartitionId.set(processorId, partitionKey + 1);
+    this.logger?.(
+      'registering scope with partition key',
+      partitionKey,
+      'for processor',
+      processorId,
+    );
 
     const scopeSyncPartition =
       this.scopeSyncCache.get(partitionKey) ?? this.initScopeSyncPartition();
@@ -266,6 +283,7 @@ export class BalarExecution<MainIn, MainOut> {
       process.nextTick(() => this.executeCheckpoint());
     }
 
+    await this.awaitScope();
     const allResults = (await scopeSyncPartition.call?.cachedPromise) as Result<In, Out>;
 
     const result = {
@@ -293,7 +311,7 @@ export class BalarExecution<MainIn, MainOut> {
   ) {
     const processorId = PROCESSOR_ID.getStore();
     if (processorId == null) {
-      throw new Error('balar error: missing processor ID');
+      throw new BalarError('balar error: missing processor ID');
     }
 
     const registryEntry = this.checkpointCache.get(operationId) ?? {
@@ -318,9 +336,27 @@ export class BalarExecution<MainIn, MainOut> {
     return registryEntry.call!.cachedPromise!;
   }
 
-  async awaitNextScopeResolution(): Promise<undefined> {
+  async awaitScope(): Promise<undefined> {
+    const processorId = PROCESSOR_ID.getStore();
+    if (processorId == null) {
+      throw new BalarError('balar error: missing processor ID');
+    }
+
+    const partitionKey = this.nextScopePartitionId.get(processorId) ?? 0;
+    this.nextScopePartitionId.set(processorId, partitionKey + 1);
+    this.logger?.(
+      'registering scope with partition key',
+      partitionKey,
+      'for processor',
+      processorId,
+    );
+
+    // Wait for other scope partition registrations to happen
     await new Promise((resolve) => process.nextTick(resolve));
-    // Whatever the outcome of the nested scope partitions, it should never fail awaiters
+
+    // Then wait for all these partitions to resolve across executions
+    // Whatever the outcome of the scope partitions, it should never fail awaiters
+    // TODO: cache the allSettled promise?
     await Promise.allSettled(
       this.scopeSyncCache.values().map((p) => p.call?.cachedPromise),
     );

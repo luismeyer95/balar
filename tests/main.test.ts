@@ -1233,6 +1233,28 @@ describe('tests', () => {
         ]);
         expect(result).toEqual(expected);
       });
+
+      test('concurrent if', async () => {
+        // Act
+        const { successes: result } = await balar.run([1, 2, 3, 4], async (n) => {
+          const [tripled, doubled] = await Promise.all([
+            balar.if(n % 2 === 0, () => registry.mul(n, 3)),
+            balar.if(n % 2 === 0, () => registry.mul(n, 2)),
+          ]);
+          console.log({ n, tripled, doubled });
+
+          return tripled ?? doubled;
+        });
+
+        // Assert
+        const expected = new Map([
+          [1, undefined],
+          [2, 6],
+          [3, undefined],
+          [4, 12],
+        ]);
+        expect(result).toEqual(expected);
+      });
     });
   });
 
