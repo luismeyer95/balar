@@ -76,11 +76,11 @@ export async function run<In, Out>(
 export class BalarExecution<MainIn, MainOut> {
   checkpointCache: Map<string, BulkOperation<unknown, unknown, unknown[]>> = new Map();
 
-  scopeSyncCache: Map<number, ScopeOperation<unknown, unknown>> = new Map();
+  scopeSyncCache: Map<string, ScopeOperation<unknown, unknown>> = new Map();
   // Tracks the number of scope registration calls made by each processor
   // since the last checkpoint. Used to determine call order and assign
   // the correct partition key when registering scopes
-  nextScopePartitionId: Map<number, number> = new Map();
+  nextScopeOrderKey: Map<number, number> = new Map();
 
   awaitingProcessors: Set<number> = new Set();
   doneProcessors = 0;
@@ -225,7 +225,7 @@ export class BalarExecution<MainIn, MainOut> {
 
       // Prevent next scope calls in same stack frame to schedule redundant checkpoint
       this.scopeSyncCache.clear();
-      this.nextScopePartitionId.clear();
+      this.nextScopeOrderKey.clear();
     }
 
     this.awaitingProcessors.clear();
@@ -268,26 +268,23 @@ export class BalarExecution<MainIn, MainOut> {
   async runScope<In, Out>(
     requests: In[],
     processor: (request: In) => Promise<Out>,
+    partitionKey?: number,
   ): Promise<Result<In, Out>> {
     const processorId = PROCESSOR_ID.getStore();
     if (processorId == null) {
       throw new BalarError('balar error: missing processor ID');
     }
 
-    const partitionKey = this.nextScopePartitionId.get(processorId) ?? 0;
-    this.nextScopePartitionId.set(processorId, partitionKey + 1);
-    this.logger?.(
-      'registering scope with partition key',
-      partitionKey,
-      'for processor',
-      processorId,
-    );
+    const orderKey = this.nextScopeOrderKey.get(processorId) ?? 0;
+    this.nextScopeOrderKey.set(processorId, orderKey + 1);
+    // Same branches within same scope calls (if/switch) across executions will have the
+    // same branch key, we use it to distinguish between concurrent if/switch calls and
+    // correctly group executions
+    const branchKey = `$${orderKey}/${partitionKey ?? 0}`;
 
-    // Same-positioned scope calls (if/else) across executions will have the same partition key,
-    // we can use it to store scope execution metadata
     const scopeSyncPartition =
-      this.scopeSyncCache.get(partitionKey) ?? this.initScopeSyncPartition();
-    this.scopeSyncCache.set(partitionKey, scopeSyncPartition);
+      this.scopeSyncCache.get(branchKey) ?? this.initScopeSyncPartition();
+    this.scopeSyncCache.set(branchKey, scopeSyncPartition);
 
     scopeSyncPartition.input.push(...requests);
 
@@ -303,7 +300,6 @@ export class BalarExecution<MainIn, MainOut> {
       process.nextTick(() => this.executeCheckpoint());
     }
 
-    await this.awaitScope();
     const allResults = (await scopeSyncPartition.call?.cachedPromise) as Result<In, Out>;
 
     const result = {
@@ -354,31 +350,5 @@ export class BalarExecution<MainIn, MainOut> {
 
     // Returns the whole result set => consumers should filter
     return registryEntry.call!.cachedPromise!;
-  }
-
-  async awaitScope(): Promise<undefined> {
-    const processorId = PROCESSOR_ID.getStore();
-    if (processorId == null) {
-      throw new BalarError('balar error: missing processor ID');
-    }
-
-    const partitionKey = this.nextScopePartitionId.get(processorId) ?? 0;
-    this.nextScopePartitionId.set(processorId, partitionKey + 1);
-    this.logger?.(
-      'registering scope with partition key',
-      partitionKey,
-      'for processor',
-      processorId,
-    );
-
-    // Wait for other scope partition registrations to happen
-    await new Promise((resolve) => process.nextTick(resolve));
-
-    // Then wait for all these partitions to resolve across executions
-    // Whatever the outcome of the scope partitions, it should never fail awaiters
-    // TODO: cache the allSettled promise?
-    await Promise.allSettled(
-      this.scopeSyncCache.values().map((p) => p.call?.cachedPromise),
-    );
   }
 }

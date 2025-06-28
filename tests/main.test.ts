@@ -25,6 +25,7 @@ describe('tests', () => {
     identity1: jest.fn(async (_: number[]) => new Map(_.map((x) => [x, x]))),
     identity2: jest.fn(async (_: number[]) => new Map(_.map((x) => [x, x]))),
     mul: jest.fn(async (_: number[], _2: number) => new Map(_.map((x) => [x, x * _2]))),
+    div: jest.fn(async (_: number[], _2: number) => new Map(_.map((x) => [x, x / _2]))),
     lt: jest.fn(async (_: number[], _2: number) => new Map(_.map((x) => [x, x < _2]))),
     gt: jest.fn(async (_: number[], _2: number) => new Map(_.map((x) => [x, x > _2]))),
     arrayVariant: jest.fn(async (_: number[]) => _),
@@ -40,6 +41,7 @@ describe('tests', () => {
       identity1: spies.identity1,
       identity2: spies.identity2,
       mul: spies.mul,
+      div: spies.div,
       lt: spies.lt,
       gt: spies.gt,
       arrayVariant: spies.arrayVariant,
@@ -1316,7 +1318,35 @@ describe('tests', () => {
         expect(spies.identity).toHaveBeenCalledWith([1, 3]);
       });
 
-      test('try / catch / finally', async () => {
+      test('if / else if / else', async () => {
+        // Act
+        const { successes: result } = await balar.run([1, 2, 3, 4, 5], async (n) => {
+          return balar.switch(true, [
+            [n % 2 === 0, () => registry.div(n, 2)],
+            [n < 5, () => registry.mul(n, 2)],
+            () => registry.identity(n),
+          ]);
+        });
+
+        // Assert
+        const expected = new Map([
+          [1, 2],
+          [2, 1],
+          [3, 6],
+          [4, 2],
+          [5, 5],
+        ]);
+        expect(result).toEqual(expected);
+
+        expect(spies.div).toHaveBeenCalledTimes(1);
+        expect(spies.div).toHaveBeenCalledWith([2, 4], 2);
+        expect(spies.mul).toHaveBeenCalledTimes(1);
+        expect(spies.mul).toHaveBeenCalledWith([1, 3], 2);
+        expect(spies.identity).toHaveBeenCalledTimes(1);
+        expect(spies.identity).toHaveBeenCalledWith([5]);
+      });
+
+      test('try / catch', async () => {
         // Act
         const { successes: result } = await balar.run([1, 2, 3, 4], async (n) => {
           try {
@@ -1417,40 +1447,28 @@ describe('tests', () => {
 
       test('each branch runs concurrently', async () => {
         // Act
-        const { successes, errors } = await balar.run([1, 2, 3, 4, 5], async (n) => {
+        let counter = 0;
+
+        await balar.run([1, 2], async (n) => {
           return balar.switch(
-            n <= 2,
+            n < 2,
             async () => {
-              const x = await registry.mul(n, 2);
-              const y = await registry.mul(x!, 3);
-              return y;
+              await new Promise((resolve) => setTimeout(resolve, 5));
+              if (counter === 1) {
+                // only runs if else branch didn't wait for if
+                // to checkpoint
+                counter += 1;
+              }
+              await registry.noop(n);
             },
             async () => {
-              if (n > 4) {
-                throw -1;
-              }
-              const x = await registry.mul(n, 100);
-              const y = await registry.mul(x!, 10);
-              return y;
+              await registry.identity(n);
+              counter += 1;
             },
           );
         });
 
-        // Assert (call order matters)
-        expect(spies.mul).toHaveBeenNthCalledWith(1, [1, 2], 2);
-        expect(spies.mul).toHaveBeenNthCalledWith(2, [3, 4], 100);
-        expect(spies.mul).toHaveBeenNthCalledWith(3, [2, 4], 3);
-        expect(spies.mul).toHaveBeenNthCalledWith(4, [300, 400], 10);
-
-        expect(successes).toEqual(
-          new Map([
-            [1, 6],
-            [2, 12],
-            [3, 3000],
-            [4, 4000],
-          ]),
-        );
-        expect(errors).toEqual(new Map([[5, -1]]));
+        expect(counter).toEqual(2);
       });
     });
   });
