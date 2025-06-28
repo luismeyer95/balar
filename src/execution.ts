@@ -1,9 +1,9 @@
 import {
   ExecutionOptions,
   BulkOperation,
-  RegistryEntry,
   ScopeOperation,
   DeferredPromise,
+  BulkFn,
 } from './api';
 import { EXECUTION, PROCESSOR_ID } from './constants';
 import { BalarError, Result } from './primitives';
@@ -247,7 +247,21 @@ export class BalarExecution<MainIn, MainOut> {
 
     bulkOp
       .fn(bulkOp.input, ...bulkOp.extraArgs)
-      .then(bulkOp.call.resolve)
+      .then((result) => {
+        if (!Array.isArray(result)) {
+          bulkOp.call!.resolve(result);
+          return;
+        }
+
+        if (result.length !== bulkOp.input.length) {
+          throw new BalarError(
+            'result array length does not match input array length for operation ' +
+              opName,
+          );
+        }
+
+        bulkOp.call!.resolve(new Map(result.map((e, i) => [bulkOp.input[i], e])));
+      })
       .catch(bulkOp.call.reject);
   }
 
@@ -269,6 +283,8 @@ export class BalarExecution<MainIn, MainOut> {
       processorId,
     );
 
+    // Same-positioned scope calls (if/else) across executions will have the same partition key,
+    // we can use it to store scope execution metadata
     const scopeSyncPartition =
       this.scopeSyncCache.get(partitionKey) ?? this.initScopeSyncPartition();
     this.scopeSyncCache.set(partitionKey, scopeSyncPartition);
@@ -309,7 +325,7 @@ export class BalarExecution<MainIn, MainOut> {
 
   registerCall(
     operationId: string,
-    config: RegistryEntry<unknown, unknown, unknown[]>,
+    fn: BulkFn<unknown, unknown, unknown[]>,
     inputs: unknown[],
     extraArgs: unknown[],
   ) {
@@ -319,7 +335,7 @@ export class BalarExecution<MainIn, MainOut> {
     }
 
     const registryEntry = this.checkpointCache.get(operationId) ?? {
-      ...config,
+      fn,
       input: [],
       extraArgs,
       call: null,

@@ -1,11 +1,11 @@
 import crypto from 'node:crypto';
 import {
-  RegistryEntry,
   Facade,
   BulkMethods,
   ObjectFacade,
   BalarFn,
   AssertBulkRecord,
+  BulkFn,
 } from './api';
 import { EXECUTION } from './constants';
 import { getMethodsOfClassObject } from './utils';
@@ -48,10 +48,10 @@ export function fns<R extends Record<string, any>>(
   const scalarHandlers: Record<string, BalarFn<unknown, unknown, unknown[]>> = {};
 
   for (const entryName of Object.keys(bulkFunctions)) {
-    const entry = bulkFunctions[entryName];
-    const fn = generateUserExposedFn(entryName, { fn: entry });
+    const originalFn = bulkFunctions[entryName];
+    const wrappedFn = generateUserExposedFn(entryName, originalFn);
 
-    scalarHandlers[entryName] = fn;
+    scalarHandlers[entryName] = wrappedFn;
   }
 
   return scalarHandlers as Facade<R>;
@@ -114,10 +114,10 @@ export function object<
 
   const entries: Record<string, BalarFn<unknown, unknown, unknown[]>> = {};
   for (const methodName of apiMethods) {
-    const method = object[methodName].bind(object);
+    const originalMethod = object[methodName].bind(object);
 
-    const fn = generateUserExposedFn(methodName, { fn: method });
-    entries[methodName] = fn;
+    const wrappedMethod = generateUserExposedFn(methodName, originalMethod);
+    entries[methodName] = wrappedMethod;
   }
 
   return entries as ObjectFacade<O, P, E>;
@@ -125,7 +125,7 @@ export function object<
 
 function generateUserExposedFn(
   entryName: string,
-  entry: RegistryEntry<unknown, unknown, unknown[]>,
+  fn: BulkFn<unknown, unknown, unknown[]>,
   uniquePrefix: string = generateUniqueOperationPrefix(),
 ): BalarFn<unknown, unknown, unknown[]> {
   return (async (
@@ -136,7 +136,7 @@ function generateUserExposedFn(
     const inputs = Array.isArray(input) ? input : [input];
 
     if (!bulkContext) {
-      return entry.fn(inputs, ...extraArgs);
+      return fn(inputs, ...extraArgs);
     }
 
     const argsId = extraArgs.length ? hash(extraArgs).slice(0, 6) : '';
@@ -148,7 +148,7 @@ function generateUserExposedFn(
 
     const allResults = await bulkContext.registerCall(
       uniqueOperationId,
-      entry,
+      fn,
       inputs,
       extraArgs,
     );

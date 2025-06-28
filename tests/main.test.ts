@@ -1,11 +1,12 @@
 import { balar } from '../src';
+import { BalarError } from '../src/primitives';
 import {
   Account,
   AccountsRepository,
   BudgetsRepository,
   UpdateIssues as Issues,
 } from './fakes/budget.fake';
-import { expectToHaveBeenCalledWithUnordered } from './jest-extensions';
+import { expectToHaveBeenCalledWithUnordered } from './utils/jest-extensions';
 
 describe('tests', () => {
   const accountsRepo = new AccountsRepository();
@@ -26,6 +27,7 @@ describe('tests', () => {
     mul: jest.fn(async (_: number[], _2: number) => new Map(_.map((x) => [x, x * _2]))),
     lt: jest.fn(async (_: number[], _2: number) => new Map(_.map((x) => [x, x < _2]))),
     gt: jest.fn(async (_: number[], _2: number) => new Map(_.map((x) => [x, x > _2]))),
+    arrayVariant: jest.fn(async (_: number[]) => _),
   };
 
   let registry = createDefaultRegistry();
@@ -40,6 +42,7 @@ describe('tests', () => {
       mul: spies.mul,
       lt: spies.lt,
       gt: spies.gt,
+      arrayVariant: spies.arrayVariant,
       inspect: spies.inspect as any as <T>(args: T[]) => Promise<Map<T, void>>,
       // @ts-expect-error
       inspectBad: spies.inspect as (args: any[]) => Promise<Map<any, void>>,
@@ -88,25 +91,103 @@ describe('tests', () => {
     await setupAccountsAndBudgets();
   });
 
-  describe('facade', () => {
-    test('array as scalar not supported', async () => {
-      const mock = jest.fn(async (_: number[][]) => new Map<number[], boolean>());
-      const registry = balar.wrap.fns({
-        // @ts-expect-error
-        takesArrayScalar: mock,
-        // @ts-expect-error
-        alsoErrors: async (_: number[][]) => new Map<number[], boolean>(),
+  describe('configuration', () => {
+    describe('bulk fn types', () => {
+      test('bulk fn array output not same length as input should throw', async () => {
+        const double = jest.fn(async (_: number[]) => _.slice(0, _.length / 2));
+        const registry = balar.wrap.fns({
+          double,
+        });
+
+        const throwingCall = async () => {
+          await balar.run([1, 2, 3, 4], (arg) => {
+            return registry.double(arg);
+          });
+        };
+
+        await expect(throwingCall()).rejects.toThrow(BalarError);
       });
 
-      await balar.run([1, 2], async function (args: number) {
-        // @ts-expect-error
-        return await registry.takesArrayScalar([args]);
+      test('fns - allow bulk fn with output array', async () => {
+        const double = jest.fn(async (_: number[]) => _.map((x) => x * 2));
+        const registry = balar.wrap.fns({
+          double,
+        });
+
+        const { successes: result } = await balar.run([1, 5, 3], async (arg) => {
+          const x: number = await registry.double(arg);
+          return x;
+        });
+
+        expect(result).toEqual(
+          new Map([
+            [1, 2],
+            [5, 10],
+            [3, 6],
+          ]),
+        );
+        expect(double).toHaveBeenCalledTimes(1);
+        expect(double).toHaveBeenCalledWith([1, 5, 3]);
       });
 
-      // Result is unexpectedly a 1-level deep array as the runtime resolved
-      // signature was bulk (can't easily disambiguate between scalar and bulk
-      // calls for array types).
-      expect(mock).toHaveBeenCalledWith([1, 2]);
+      test('object - allow bulk fn with output array', async () => {
+        class Doubler {
+          async double(_: number[]) {
+            return _.map((x) => x * 2);
+          }
+        }
+        const registry = balar.wrap.object(new Doubler());
+
+        const { successes: result } = await balar.run([1, 5, 3], (arg) => {
+          return registry.double(arg);
+        });
+
+        expect(result).toEqual(
+          new Map([
+            [1, 2],
+            [5, 10],
+            [3, 6],
+          ]),
+        );
+      });
+
+      test('array output guarantees result for each input', async () => {
+        const doubleArr = jest.fn(async (_: number[]) => _.map((x) => x * 2));
+        const doubleMap = jest.fn(
+          async (_: number[]) => new Map(_.map((x) => [x, x * 2])),
+        );
+
+        const registry = balar.wrap.fns({
+          doubleArr,
+          doubleMap,
+        });
+
+        await balar.run([1], async (arg) => {
+          const _x: number = await registry.doubleArr(arg);
+          // @ts-expect-error -- only array outputs guarantee output for each input with runtime check
+          const _y: number = await registry.doubleMap(arg);
+        });
+      });
+
+      test('array as scalar not supported', async () => {
+        const mock = jest.fn(async (_: number[][]) => new Map<number[], boolean>());
+        const registry = balar.wrap.fns({
+          // @ts-expect-error
+          takesArrayScalar: mock,
+          // @ts-expect-error
+          alsoErrors: async (_: number[][]) => new Map<number[], boolean>(),
+        });
+
+        await balar.run([1, 2], async function (args: number) {
+          // @ts-expect-error
+          return await registry.takesArrayScalar([args]);
+        });
+
+        // Result is unexpectedly a 1-level deep array as the runtime resolved
+        // signature was bulk (can't easily disambiguate between scalar and bulk
+        // calls for array types).
+        expect(mock).toHaveBeenCalledWith([1, 2]);
+      });
     });
 
     describe('fns', () => {

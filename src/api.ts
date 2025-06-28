@@ -3,15 +3,34 @@ import { UnionPickAndExclude, ValueTypes } from './utils';
 
 export type ProcessorFn<In, Out> = (request: In) => Promise<Out>;
 
-export type BulkFn<In, Out, Args extends readonly unknown[]> = (
+export type BulkFn<In, Out, Args extends readonly unknown[]> = BulkMapFn<In, Out, Args> &
+  BulkArrayFn<In, Out, Args>;
+
+export type BulkMapFn<In, Out, Args extends readonly unknown[]> = (
   request: In[],
   ...args: Args
 ) => Promise<Map<In, Out>>;
 
-export type IsBulkFn<Fn> = Fn extends (
+export type BulkArrayFn<In, Out, Args extends readonly unknown[]> = (
+  request: In[],
+  ...args: Args
+) => Promise<Out[]>;
+
+export type IsBulkFn<Fn> = IsBulkMapFn<Fn> extends true ? true : IsBulkArrayFn<Fn>;
+
+export type IsBulkMapFn<Fn> = Fn extends (
   r: Array<infer In>,
   ...args: infer _Args
 ) => Promise<Map<infer In, infer _Out>>
+  ? In extends unknown[]
+    ? false
+    : true
+  : false;
+
+export type IsBulkArrayFn<Fn> = Fn extends (
+  r: Array<infer In>,
+  ...args: infer _Args
+) => Promise<Array<infer _Out>>
   ? In extends unknown[]
     ? false
     : true
@@ -25,21 +44,17 @@ export type BulkRecord<R extends Record<string, any>> = {
   [K in keyof R as IsBulkFn<R[K]> extends true ? K : never]: R[K];
 };
 
-export type ScalarFn<In, Out, Args extends readonly unknown[]> = (
+export type ScalarFn<In, Out, Args extends readonly unknown[], Nullable> = (
   request: In,
   ...args: Args
-) => Promise<Out | undefined>;
+) => Promise<Nullable extends true ? Out | undefined : Out>;
 
-export type BalarFn<In, Out, Args extends readonly unknown[]> = BulkFn<In, Out, Args> &
-  ScalarFn<In, Out, Args>;
-
-export type RegistryEntry<In, Out, Args extends readonly unknown[]> = {
-  fn: BulkFn<In, Out, Args>;
-};
-
-export type CheckedRegistryEntry<I, O, Args extends readonly unknown[]> = Required<
-  RegistryEntry<I, O, Args>
-> & { __brand: 'checked' };
+export type BalarFn<
+  In,
+  Out,
+  Args extends readonly unknown[],
+  Nullable = true,
+> = BulkMapFn<In, Out, Args> & ScalarFn<In, Out, Args, Nullable>;
 
 export type DeferredPromise<T> = {
   resolve: (ret: T) => void;
@@ -72,14 +87,16 @@ export type ExecutionOptions = {
 };
 
 /**
- * Takes a bulk function and converts its signature to a hybrid scalar/bulk function.
+ * Takes a bulk map/array function and converts its signature to a hybrid scalar/bulk(map) function.
  */
 type BalarizeFn<F> = F extends (
   input: Array<infer I>,
   ...args: infer Args
 ) => Promise<Map<infer I, infer O>>
-  ? BalarFn<I, O, Args>
-  : never;
+  ? BalarFn<I, O, Args, true>
+  : F extends (input: Array<infer I>, ...args: infer Args) => Promise<Array<infer O>>
+    ? BalarFn<I, O, Args, false>
+    : never;
 
 export type BulkMethods<O extends Record<string, any>> = ValueTypes<{
   [K in keyof O as IsBulkFn<O[K]> extends true ? K : never]: K;
@@ -98,7 +115,7 @@ export type ObjectFacade<
     ? K extends UnionPickAndExclude<keyof O, P, E>
       ? K
       : never
-    : never]: O[K] extends BulkFn<infer I, infer O, infer A> ? BalarFn<I, O, A> : never;
+    : never]: BalarizeFn<O[K]>;
 };
 
 /**
