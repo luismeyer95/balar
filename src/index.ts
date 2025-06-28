@@ -1,6 +1,6 @@
 import { run } from './execution';
 import { fns, object } from './config';
-import { _if } from './control-flow';
+import { _if, _switch } from './control-flow';
 
 export { ExecutionOptions, BalarFn } from './api';
 
@@ -10,5 +10,6 @@ export const balar = {
     object,
   },
   ['if']: _if,
+  ['switch']: _switch,
   run,
 };

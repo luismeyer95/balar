@@ -1294,13 +1294,11 @@ describe('tests', () => {
       test('if / else', async () => {
         // Act
         const { successes: result } = await balar.run([1, 2, 3, 4], async (n) => {
-          return balar
-            .if(n % 2 === 0, () => {
-              return registry.mul(n, 3);
-            })
-            .else(() => {
-              return registry.identity(n);
-            });
+          return balar.switch(
+            n % 2 === 0,
+            () => registry.mul(n, 3),
+            () => registry.identity(n),
+          );
         });
 
         // Assert
@@ -1322,13 +1320,13 @@ describe('tests', () => {
         // Act
         const { successes: result } = await balar.run([1, 2, 3, 4], async (n) => {
           try {
-            return await balar
-              .if(n % 2 === 0, () => {
+            return await balar.switch(
+              n % 2 === 0,
+              () => {
                 throw n * 3;
-              })
-              .else(() => {
-                return registry.identity(n);
-              });
+              },
+              () => registry.identity(n),
+            );
           } catch (val: unknown) {
             return val;
           }
@@ -1387,13 +1385,23 @@ describe('tests', () => {
         // Act
         const result = await balar
           .run([1, 2, 3, 4], async (n) => {
-            return balar
-              .if(n <= 2, async () => {
-                return balar.if(n > 1, async () => 2).else(async () => 1);
-              })
-              .else(() => {
-                return balar.if(n < 4, async () => 3).else(async () => 4);
-              });
+            return balar.switch(
+              n <= 2,
+              () => {
+                return balar.switch(
+                  n > 1,
+                  async () => 2,
+                  async () => 1,
+                );
+              },
+              () => {
+                return balar.switch(
+                  n < 4,
+                  async () => 3,
+                  async () => 4,
+                );
+              },
+            );
           })
           .then((res) => res.successes);
 
@@ -1410,20 +1418,22 @@ describe('tests', () => {
       test('each branch runs concurrently', async () => {
         // Act
         const { successes, errors } = await balar.run([1, 2, 3, 4, 5], async (n) => {
-          return balar
-            .if(n <= 2, async () => {
+          return balar.switch(
+            n <= 2,
+            async () => {
               const x = await registry.mul(n, 2);
               const y = await registry.mul(x!, 3);
               return y;
-            })
-            .else(async () => {
+            },
+            async () => {
               if (n > 4) {
                 throw -1;
               }
               const x = await registry.mul(n, 100);
               const y = await registry.mul(x!, 10);
               return y;
-            });
+            },
+          );
         });
 
         // Assert (call order matters)
