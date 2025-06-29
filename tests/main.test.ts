@@ -1296,7 +1296,7 @@ describe('tests', () => {
       test('if / else', async () => {
         // Act
         const { successes: result } = await balar.run([1, 2, 3, 4], async (n) => {
-          return balar.switch(
+          return balar.if(
             n % 2 === 0,
             () => registry.mul(n, 3),
             () => registry.identity(n),
@@ -1318,39 +1318,11 @@ describe('tests', () => {
         expect(spies.identity).toHaveBeenCalledWith([1, 3]);
       });
 
-      test('if / else if / else', async () => {
-        // Act
-        const { successes: result } = await balar.run([1, 2, 3, 4, 5], async (n) => {
-          return balar.switch(true, [
-            [n % 2 === 0, () => registry.div(n, 2)],
-            [n < 5, () => registry.mul(n, 2)],
-            () => registry.identity(n),
-          ]);
-        });
-
-        // Assert
-        const expected = new Map([
-          [1, 2],
-          [2, 1],
-          [3, 6],
-          [4, 2],
-          [5, 5],
-        ]);
-        expect(result).toEqual(expected);
-
-        expect(spies.div).toHaveBeenCalledTimes(1);
-        expect(spies.div).toHaveBeenCalledWith([2, 4], 2);
-        expect(spies.mul).toHaveBeenCalledTimes(1);
-        expect(spies.mul).toHaveBeenCalledWith([1, 3], 2);
-        expect(spies.identity).toHaveBeenCalledTimes(1);
-        expect(spies.identity).toHaveBeenCalledWith([5]);
-      });
-
       test('try / catch', async () => {
         // Act
         const { successes: result } = await balar.run([1, 2, 3, 4], async (n) => {
           try {
-            return await balar.switch(
+            return await balar.if(
               n % 2 === 0,
               () => {
                 throw n * 3;
@@ -1415,17 +1387,17 @@ describe('tests', () => {
         // Act
         const result = await balar
           .run([1, 2, 3, 4], async (n) => {
-            return balar.switch(
+            return balar.if(
               n <= 2,
               () => {
-                return balar.switch(
+                return balar.if(
                   n > 1,
                   async () => 2,
                   async () => 1,
                 );
               },
               () => {
-                return balar.switch(
+                return balar.if(
                   n < 4,
                   async () => 3,
                   async () => 4,
@@ -1450,7 +1422,7 @@ describe('tests', () => {
         let counter = 0;
 
         await balar.run([1, 2], async (n) => {
-          return balar.switch(
+          return balar.if(
             n < 2,
             async () => {
               await new Promise((resolve) => setTimeout(resolve, 5));
@@ -1469,6 +1441,122 @@ describe('tests', () => {
         });
 
         expect(counter).toEqual(2);
+      });
+    });
+
+    describe('switch', () => {
+      test('only default', async () => {
+        // Act
+        const { successes: result } = await balar.run([1, 2], async (n) => {
+          return balar.switch(() => registry.identity(n));
+        });
+
+        // Assert
+        const expected = new Map([
+          [1, 1],
+          [2, 2],
+        ]);
+        expect(result).toEqual(expected);
+      });
+
+      test('only case (non exhaustive)', async () => {
+        // Act
+        const { successes: result } = await balar.run([1, 2], async (n) => {
+          return balar.switch([n === 1, () => registry.identity(n)]);
+        });
+
+        // Assert
+        const expected = new Map([
+          [1, 1],
+          [2, undefined],
+        ]);
+        expect(result).toEqual(expected);
+      });
+
+      test('both case and default', async () => {
+        // Act
+        const { successes: result } = await balar.run([1, 2, 3], async (n) => {
+          const result1 = await balar.switch(n, [
+            [2, async () => 4],
+            [3, async () => 6],
+          ]);
+
+          // @ts-expect-error -- no default case, will be undefined for 1
+          const _: number = result1;
+
+          const result2 = await balar.switch(n, [
+            [2, async () => 4],
+            [3, async () => 6],
+            async () => 'default' as const,
+          ]);
+
+          // with default case => always a number
+          const ret: number | 'default' = result2;
+          return ret;
+        });
+
+        // Assert
+        const expected = new Map<number, number | 'default'>([
+          [1, 'default'],
+          [2, 4],
+          [3, 6],
+        ]);
+        expect(result).toEqual(expected);
+      });
+
+      test('as if / elseif / else', async () => {
+        // Act
+        const { successes: result } = await balar.run([1, 2, 3, 4, 5], async (n) => {
+          return balar.switch(
+            [n % 2 === 0, () => registry.div(n, 2)],
+            [n < 5, () => registry.mul(n, 2)],
+            () => registry.identity(n),
+          );
+        });
+
+        // Assert
+        const expected = new Map([
+          [1, 2],
+          [2, 1],
+          [3, 6],
+          [4, 2],
+          [5, 5],
+        ]);
+        expect(result).toEqual(expected);
+
+        expect(spies.div).toHaveBeenCalledTimes(1);
+        expect(spies.div).toHaveBeenCalledWith([2, 4], 2);
+        expect(spies.mul).toHaveBeenCalledTimes(1);
+        expect(spies.mul).toHaveBeenCalledWith([1, 3], 2);
+        expect(spies.identity).toHaveBeenCalledTimes(1);
+        expect(spies.identity).toHaveBeenCalledWith([5]);
+      });
+
+      test('batches within branch', async () => {
+        // Act
+        const { successes: result } = await balar.run([1, 2, 3, 4], async (n) => {
+          return balar.switch(n, [
+            [2, () => registry.div(n, 2)],
+            [3, () => registry.mul(n, 2)],
+            () => registry.identity(n),
+          ]);
+        });
+
+        // Assert
+        const expected = new Map([
+          [1, 1],
+          [2, 1],
+          [3, 6],
+          [4, 4],
+        ]);
+        expect(result).toEqual(expected);
+
+        expect(spies.div).toHaveBeenCalledTimes(1);
+        expect(spies.div).toHaveBeenCalledWith([2], 2);
+        expect(spies.mul).toHaveBeenCalledTimes(1);
+        expect(spies.mul).toHaveBeenCalledWith([3], 2);
+        expect(spies.identity).toHaveBeenCalledTimes(1);
+        expect(spies.identity).toHaveBeenCalledWith([1, 4]);
       });
     });
   });
