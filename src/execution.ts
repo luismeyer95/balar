@@ -6,7 +6,7 @@ import {
   BulkFn,
 } from './api';
 import { EXECUTION, PROCESSOR_ID } from './constants';
-import { BalarError, Result } from './primitives';
+import { BalarError, BalarStopError, Result } from './primitives';
 import crypto from 'node:crypto';
 import { chunk } from './utils';
 
@@ -145,28 +145,39 @@ export class BalarExecution<MainIn, MainOut> {
     const successes = new Map<MainIn, MainOut>();
     const errors = new Map<MainIn, unknown>();
 
-    await EXECUTION.run(this as BalarExecution<unknown, unknown>, async () => {
-      for (const requestsBatch of chunk(requests, this.maxConcurrency)) {
-        this.logger?.('starting execution for request batch: ', requestsBatch);
+    // Deduplicate inputs
+    var requestSet = new Set(requests);
 
-        const batchResults = await Promise.allSettled(this.runBatch(requestsBatch));
+    try {
+      await EXECUTION.run(this as BalarExecution<unknown, unknown>, async () => {
+        for (const requestsBatch of chunk(requestSet, this.maxConcurrency)) {
+          this.logger?.('starting execution for request batch: ', requestsBatch);
+          const batchResults = await Promise.allSettled(this.runBatch(requestsBatch));
 
-        for (let i = 0; i < batchResults.length; i += 1) {
-          const batchResult = batchResults[i];
-          if (batchResult.status === 'fulfilled') {
-            successes.set(requestsBatch[i], batchResult.value);
-          } else {
-            if (batchResult.reason instanceof BalarError) {
-              // Only balar errors are expected to bubble up
-              throw batchResult.reason;
+          for (let i = 0; i < batchResults.length; i += 1) {
+            const batchResult = batchResults[i];
+            if (batchResult.status === 'fulfilled') {
+              successes.set(requestsBatch[i], batchResult.value);
+            } else {
+              if (batchResult.reason instanceof BalarError) {
+                // Only balar errors are expected to bubble up
+                throw batchResult.reason;
+              }
+              errors.set(requestsBatch[i], batchResult.reason);
             }
-            errors.set(requestsBatch[i], batchResult.reason);
           }
         }
+      });
+      return { successes, errors };
+    } catch (err: unknown) {
+      if (err instanceof BalarStopError) {
+        return {
+          successes: new Map(),
+          errors: new Map(requests.map((req) => [req, err])),
+        };
       }
-    });
-
-    return { successes, errors };
+      throw err;
+    }
   }
 
   private runBatch(requestBatch: MainIn[]): Promise<MainOut>[] {
@@ -174,6 +185,8 @@ export class BalarExecution<MainIn, MainOut> {
     this.totalProcessors = requestBatch.length;
 
     return requestBatch.map(async (request, index) => {
+      let error: unknown = null;
+
       try {
         const result = await PROCESSOR_ID.run(index, () => {
           if (this.processor instanceof Map) {
@@ -185,15 +198,45 @@ export class BalarExecution<MainIn, MainOut> {
         this.logger?.('returned from processor execution for request input', request);
         return result;
       } catch (err: unknown) {
-        this.logger?.('throwed from processor execution for request input', request);
+        error = err;
+        this.logger?.('throwed from processor execution for request input', request, err);
         throw err;
       } finally {
-        this.doneProcessors += 1;
-        if (this.awaitingProcessors.size + this.doneProcessors === this.totalProcessors) {
-          this.executeCheckpoint();
+        if (!(error instanceof BalarError)) {
+          this.doneProcessors += 1;
+          if (
+            this.awaitingProcessors.size + this.doneProcessors ===
+            this.totalProcessors
+          ) {
+            this.executeCheckpoint();
+          }
+        } else {
+          this.forceFailCheckpoint(error);
         }
       }
     });
+  }
+
+  private forceFailCheckpoint(error: BalarStopError) {
+    if (this.checkpointCache.size > 0) {
+      for (const opName of this.checkpointCache.keys()) {
+        const bulkOp = this.checkpointCache.get(opName);
+        bulkOp?.call?.reject(error);
+      }
+      this.checkpointCache.clear();
+    }
+
+    if (this.scopeSyncCache.size > 0) {
+      for (const scopeSyncPartition of this.scopeSyncCache.values()) {
+        scopeSyncPartition.call?.reject(error);
+      }
+
+      // Prevent next scope calls in same stack frame to schedule redundant checkpoint
+      this.scopeSyncCache.clear();
+      this.nextScopeOrderKey.clear();
+    }
+
+    this.awaitingProcessors.clear();
   }
 
   private executeCheckpoint() {
@@ -245,22 +288,24 @@ export class BalarExecution<MainIn, MainOut> {
       ...bulkOp.extraArgs,
     );
 
+    const inputArray = [...bulkOp.input];
+
     bulkOp
-      .fn(bulkOp.input, ...bulkOp.extraArgs)
+      .fn(inputArray, ...bulkOp.extraArgs)
       .then((result) => {
         if (!Array.isArray(result)) {
           bulkOp.call!.resolve(result);
           return;
         }
 
-        if (result.length !== bulkOp.input.length) {
+        if (result.length !== bulkOp.input.size) {
           throw new BalarError(
             'result array length does not match input array length for operation ' +
               opName,
           );
         }
 
-        bulkOp.call!.resolve(new Map(result.map((e, i) => [bulkOp.input[i], e])));
+        bulkOp.call!.resolve(new Map(result.map((res, i) => [inputArray[i], res])));
       })
       .catch(bulkOp.call.reject);
   }
@@ -330,18 +375,18 @@ export class BalarExecution<MainIn, MainOut> {
       throw new BalarError('balar error: missing processor ID');
     }
 
-    const registryEntry = this.checkpointCache.get(operationId) ?? {
+    const bulkOp = this.checkpointCache.get(operationId) ?? {
       fn,
-      input: [],
+      input: new Set(),
       extraArgs,
       call: null,
     };
-    this.checkpointCache.set(operationId, registryEntry);
+    this.checkpointCache.set(operationId, bulkOp);
 
-    if (!registryEntry.call) {
-      registryEntry.call = this.initDeferredPromise();
+    if (!bulkOp.call) {
+      bulkOp.call = this.initDeferredPromise();
     }
-    registryEntry.input.push(...inputs);
+    inputs.forEach((input) => bulkOp.input.add(input));
 
     this.awaitingProcessors.add(processorId);
     if (this.awaitingProcessors.size + this.doneProcessors === this.totalProcessors) {
@@ -349,6 +394,6 @@ export class BalarExecution<MainIn, MainOut> {
     }
 
     // Returns the whole result set => consumers should filter
-    return registryEntry.call!.cachedPromise!;
+    return bulkOp.call!.cachedPromise!;
   }
 }

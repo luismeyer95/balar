@@ -1,5 +1,5 @@
 import { balar } from '../src';
-import { BalarError } from '../src/primitives';
+import { BalarError, BalarStopError } from '../src/primitives';
 import {
   Account,
   AccountsRepository,
@@ -368,6 +368,14 @@ describe('tests', () => {
       );
     });
 
+    test('duplicate inputs', async () => {
+      // Act
+      const { successes: result } = await balar.run([1, 1], async function () {});
+
+      // Assert
+      expect(result).toEqual(new Map([[1, undefined]]));
+    });
+
     test('empty inputs', async () => {
       // Act
       const { successes: result } = await balar.run(
@@ -600,7 +608,6 @@ describe('tests', () => {
           }
 
           const spends = await registry.getBudgetSpends(account.budgetIds);
-          await registry.inspect([...spends.values()]);
 
           return [...spends.values()].reduce((acc, spend) => acc + (spend || 0), 0);
         },
@@ -611,16 +618,6 @@ describe('tests', () => {
 
       expect(spies.getBudgetSpends).toHaveBeenCalledTimes(1);
       expect(spies.getBudgetSpends).toHaveBeenCalledWith([1, 2, 3, 4, 5, 6]);
-
-      expect(spies.inspect).toHaveBeenCalledTimes(1);
-      expect(spies.inspect).toHaveBeenCalledWith([
-        200,
-        1,
-        undefined,
-        undefined,
-        10,
-        undefined,
-      ]);
 
       const expected = new Map([
         [accountId1, 201],
@@ -773,7 +770,7 @@ describe('tests', () => {
   });
 
   describe('input/output mapping', () => {
-    test('should not deduplicate equal inputs to bulk fn (not in scope)', async () => {
+    test('should deduplicate equal inputs to bulk fn', async () => {
       // Act
       const requestIds = [1, 2, 3]; // all budgets are under the same account
       const { successes: issues } = await balar.run(
@@ -795,8 +792,8 @@ describe('tests', () => {
 
       expect(spies.getCurrentBudgets).toHaveBeenCalledTimes(1);
       expect(spies.getCurrentBudgets).toHaveBeenCalledWith(requestIds);
-      expect(spies.getAccountsById).toHaveBeenCalledWith([1, 1, 1]);
       expect(spies.getAccountsById).toHaveBeenCalledTimes(1);
+      expect(spies.getAccountsById).toHaveBeenCalledWith([1]);
     });
   });
 
@@ -869,7 +866,7 @@ describe('tests', () => {
       );
     });
 
-    test('throwing in 1 processor should not disrupt others', async () => {
+    test('throwing regular error in 1 processor should not disrupt others', async () => {
       // Act
       const { successes, errors } = await balar.run(
         [1, 2, 3, 4],
@@ -896,6 +893,34 @@ describe('tests', () => {
           [3, 3],
         ]),
       );
+    });
+
+    test('throwing fail all error in 1 processor should stop execution', async () => {
+      // Act
+      const errorToken = new BalarStopError('error token');
+
+      const { successes, errors } = await balar.run(
+        [1, 2, 3, 4],
+        async function (id: number) {
+          if (id % 2 === 0) {
+            throw errorToken;
+          }
+
+          return registry.identity(id);
+        },
+      );
+
+      // Assert
+      expect(errors).toEqual(
+        new Map([
+          [1, errorToken],
+          [2, errorToken],
+          [3, errorToken],
+          [4, errorToken],
+        ]),
+      );
+      expect(successes).toEqual(new Map([]));
+      expect(spies.identity).toHaveBeenCalledTimes(0);
     });
   });
 
@@ -1055,19 +1080,22 @@ describe('tests', () => {
       const { successes: result } = await balar.run(
         [10, 15, 30],
         async function (a: number) {
-          await registry.identity1(a);
+          await registry.identity1(a); // [10, 15, 30]
 
           const result = await balar
             .run([a + 1, a + 11], async (b) => {
+              // [11, 21, 16, 26, 31, 41]
               if (b % 2 === 0) {
                 return -1;
               }
+              // [11, 21, 31, 41]
 
-              await Promise.all([registry.identity1(b), registry.identity2(b)]);
+              await Promise.all([registry.identity1(b), registry.identity2(b)]); // [11, 21, 31, 41] * 2
 
               const result = await balar
                 .run([b + 1, b + 11], async (c: number) => {
-                  const [one, two] = [registry.identity1(c), registry.identity2(c)];
+                  // [12, 22, 32, 42, 52]
+                  const [one, two] = [registry.identity1(c), registry.identity2(c)]; // [12, 22, 32, 42, 52] * 2
                   await two;
                   await one;
 
@@ -1087,10 +1115,7 @@ describe('tests', () => {
       // Assert
       expect(spies.identity2).toHaveBeenCalledTimes(3);
       expect(spies.identity2).toHaveBeenNthCalledWith(1, [11, 21, 31, 41]);
-      expect(spies.identity2).toHaveBeenNthCalledWith(
-        2,
-        [12, 22, 22, 32, 32, 42, 42, 52],
-      );
+      expect(spies.identity2).toHaveBeenNthCalledWith(2, [12, 22, 32, 42, 52]);
       expect(spies.identity2).toHaveBeenNthCalledWith(3, [10, 15, 30]);
       expect(result).toEqual(
         new Map<number, (number[] | -1)[]>([

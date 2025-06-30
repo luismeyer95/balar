@@ -1,5 +1,4 @@
 import { Result } from './primitives';
-import { UnionPickAndExclude, ValueTypes } from './utils';
 
 export type ProcessorFn<In, Out> = (request: In) => Promise<Out>;
 
@@ -63,7 +62,7 @@ export type DeferredPromise<T> = {
 };
 
 export type BulkOperation<In, Out, Args extends readonly unknown[]> = {
-  input: In[];
+  input: Set<In>;
   extraArgs: Args;
   fn: BulkFn<In, Out, Args>;
   call: DeferredPromise<Map<In, Out>> | null;
@@ -124,3 +123,6 @@ export type ObjectFacade<
 export type Facade<R extends Record<string, any>> = {
   [K in keyof R as IsBulkFn<R[K]> extends true ? K : never]: BalarizeFn<R[K]>;
 };
+
+export type UnionPickAndExclude<T, P extends T, E extends T> = Extract<Exclude<T, E>, P>;
+export type ValueTypes<T> = T extends { [key: string]: infer V } ? V : never;

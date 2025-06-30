@@ -9,3 +9,10 @@ export class BalarError extends Error {
     this.name = 'BalarError';
   }
 }
+
+export class BalarStopError extends BalarError {
+  constructor(message: string) {
+    super(message);
+    this.name = 'BalarStopError';
+  }
+}
