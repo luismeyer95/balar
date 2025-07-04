@@ -281,21 +281,6 @@ expect(results).toEqual(
 
 ## ❓ FAQ
 
-### Which signatures are accepted for bulk functions?
-
-At this time, you can only provide the following signature:
-
-```ts
-type BulkFn<In, Out, Args extends readonly unknown[]> = (
-  request: In[],
-  ...args: Args
-) => Promise<Map<In, Out>>;
-```
-
-### How to handle errors?
-
-Balar never catches any errors thrown from within a `balar.run()` processor function, meaning the whole operation fails if any execution throws. The recommended way to handle errors is to have them represented in the return type of the processor function.
-
 ### How does it differ from GraphQL's DataLoader?
 
-DataLoader is the primary source of inspiration for Balar. It allows you to batch requests to the same source within the same event loop tick. Balar takes the same concept but with a different implementation, batching requests to the same source within the explicit scope you provide (e.g. across the executions of a processor function for a given set of inputs). This approach guarantees consistent batching behaviour even when executing workflows that include calls to "non-batch" async functions (see https://github.com/graphql/dataloader/issues/285). Balar also provides some utilities to simplify usage at scale within API development projects (object wrappers).
+DataLoader is a primary source of inspiration for Balar. It allows you to batch requests to the same source within the same event loop tick. Balar takes the same concept but with a different implementation, batching requests to the same source within the explicit scope you provide (e.g. across the executions of a processor function for a given set of inputs). This approach guarantees consistent batching behaviour even when executing workflows that include conditional data fetching or calls to "non-batch" async functions (see https://github.com/graphql/dataloader/issues/285). Balar also provides some utilities to simplify usage at scale within API development projects (object wrappers).
