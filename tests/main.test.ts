@@ -875,7 +875,6 @@ describe('tests', () => {
             throw 'even';
           }
 
-          await registry.noop(id);
           return registry.identity(id);
         },
       );
@@ -1603,6 +1602,44 @@ describe('tests', () => {
       expect(spies.identity).toHaveBeenCalledTimes(2);
       expect(spies.identity).toHaveBeenNthCalledWith(1, [1, 2]);
       expect(spies.identity).toHaveBeenNthCalledWith(2, [3, 4]);
+    });
+  });
+
+  describe('complex', () => {
+    test('fizzbuzz', async () => {
+      // Act
+      const { successes } = await balar.run([1, 3, 5, 7, 9, 15, 30], async (n) => {
+        const one = await balar.if(n % 15 === 0, () => registry.div(n, 15));
+        const two = await balar.if(n % 3 === 0, () => registry.div(n, 3));
+        const three = await balar.if(n % 5 === 0, () => registry.div(n, 5));
+
+        return balar.switch(
+          [one, async () => one],
+          [two, async () => two],
+          [three, async () => three],
+          () => registry.mul(n, 10),
+        );
+      });
+
+      // Assert
+      expect(spies.div).toHaveBeenCalledTimes(3);
+      expect(spies.div).toHaveBeenNthCalledWith(1, [15, 30], 15);
+      expect(spies.div).toHaveBeenNthCalledWith(2, [3, 9, 15, 30], 3);
+      expect(spies.div).toHaveBeenNthCalledWith(3, [5, 15, 30], 5);
+      expect(spies.mul).toHaveBeenCalledTimes(1);
+      expect(spies.mul).toHaveBeenCalledWith([1, 7], 10);
+
+      expect(successes).toEqual(
+        new Map([
+          [1, 10],
+          [3, 1],
+          [5, 1],
+          [7, 70],
+          [9, 3],
+          [15, 1],
+          [30, 2],
+        ]),
+      );
     });
   });
 });

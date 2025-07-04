@@ -41,31 +41,33 @@ export function _switch<T, R extends readonly unknown[]>(
   val: T extends readonly unknown[] ? never : T,
   cases: { [K in keyof R]: Case<T, R[K]> },
 ): Promise<R[number] | undefined>;
-export function _switch<R extends readonly unknown[], D>(
-  ...cases: [...{ [K in keyof R]: Case<boolean, R[K]> }, DefaultHandler<D>]
+export function _switch<T, R extends readonly unknown[], D>(
+  ...cases: [...{ [K in keyof R]: Case<T, R[K]> }, DefaultHandler<D>]
 ): Promise<R[number] | D>;
-export function _switch<R extends readonly unknown[]>(
-  ...cases: { [K in keyof R]: Case<boolean, R[K]> }
+export function _switch<T, R extends readonly unknown[]>(
+  ...cases: { [K in keyof R]: Case<T, R[K]> }
 ): Promise<R[number] | undefined>;
 export function _switch(...args: unknown[]): Promise<unknown> {
-  const [value, cases] = (() => {
-    if (args.length === 2 && !Array.isArray(args[0])) {
-      return [args[0] as unknown, args[1] as unknown[]];
-    }
-    return [true, args];
-  })();
+  const isValueSwitch = args.length === 2 && !Array.isArray(args[0]);
+
+  const defaultValue = isValueSwitch ? args[0] : true;
+  const predicate = isValueSwitch
+    ? (val: unknown) => val === defaultValue
+    : (val: unknown) => !!val;
+  const cases = isValueSwitch ? (args[1] as unknown[]) : (args as unknown[]);
 
   if (typeof cases.at(-1) === 'function') {
     const defaultCase = cases.pop();
-    cases.push([value, defaultCase]);
+    cases.push([defaultValue, defaultCase]);
   } else {
-    cases.push([value, NO_OP_PROCESSOR]);
+    cases.push([defaultValue, NO_OP_PROCESSOR]);
   }
-  return switchCase(value, cases as Case<unknown, unknown>[]);
+
+  return switchCase(predicate, cases as Case<unknown, unknown>[]);
 }
 
 export function switchCase<T, R extends readonly unknown[]>(
-  val: T,
+  predicate: (val: T) => boolean,
   cases: { [K in keyof R]: Case<T, R[K]> },
 ): Promise<R[number]> {
   const execution = EXECUTION.getStore();
@@ -83,7 +85,7 @@ export function switchCase<T, R extends readonly unknown[]>(
     const casePartitionKey = i;
 
     const [caseValue, caseFn] = _case;
-    if (caseValue !== val) {
+    if (!predicate(caseValue)) {
       continue;
     }
 
