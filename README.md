@@ -83,7 +83,6 @@ However, some simple logic to process one item can become quite complex when sca
 
 Balar allows you to write asynchronous bulk processing code that <em>looks</em> like it handles one item at a time in complete isolation, but without compromising on the efficiency of outbound asynchronous requests. Effectively, you describe how to handle one item, and Balar ensures that the underlying execution is as efficient as hand-written bulk processing code.
 
-<details>
 <summary><h2 style="display: inline-block;">Full Example</h2></summary>
 
 Say you have an API endpoint to allow users to update the budget they can spend on your service. It has some validation checks like below. For the sake of simplicity, we use `string` for errors and `true` for success.
@@ -224,8 +223,6 @@ async function updateBudgetsWithValidation(
 This code is equivalent to the previous example doing manual batching. It may look like it runs 2 network calls per request, but it only runs 2 network calls in total regardless of the number of requests.
 
 Essentially, Balar provides a clean API to queue inputs to bulk functions of your choice and execute them in one batch. No manual batching, no managing parallel states; just clean, focused scalar logic with bulk efficiency!
-
-</details>
 
 ## ⚙️ How it works
 
