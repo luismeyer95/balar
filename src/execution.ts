@@ -310,6 +310,31 @@ export class BalarExecution<MainIn, MainOut> {
       .catch(bulkOp.call.reject);
   }
 
+  /**
+   * `runScope` is the core abstraction that enables:
+   * - Creating top-level and nested balar contexts for processor executions to interact with,
+   *   allowing for synchronization of API calls across them
+   * - Having branches within a balar context (if/switch) that execute concurrently, automatically
+   *   partitioning the dataset by branch and synchronizing API calls within
+   *
+   * If ran at top-level (`balar.run()`), the provided processor function is applied to each
+   * input in `inputs`, and the execution finishes when all of them are settled
+   *
+   * If ran within an existing balar context (nested `balar.run()`, `balar.if()`, `balar.switch()`),
+   * then `runScope` is being ran concurrently for all inputs in this context. In this case, the
+   * execution finishes when all the (different) processor fn calls are settled for all inputs
+   * across executions.
+   *
+   *   In the case of nested `balar.run()`, the engine waits for all executions to have provided
+   *   its inputs + handler. Then, all handlers are executed concurrently as part of a new balar
+   *   context stacked on top of the 1st.
+   *
+   *   In the particular case of if/switch, multiple balar contexts must be created and executed
+   *   independently for each branch (2+). To allow for this, `runScope` exposes a `partitionKey`
+   *   arg that is used by the engine to understand which inputs + handler is part of which partition.
+   *   All inputs are still awaited before executing handlers, but once done, each partition will be
+   *   executed as a separate balar context.
+   */
   async runScope<In, Out>(
     requests: In[],
     processor: (request: In) => Promise<Out>,
@@ -322,9 +347,9 @@ export class BalarExecution<MainIn, MainOut> {
 
     const orderKey = this.nextScopeOrderKey.get(processorId) ?? 0;
     this.nextScopeOrderKey.set(processorId, orderKey + 1);
-    // Same branches within same scope calls (if/switch) across executions will have the
-    // same branch key, we use it to distinguish between concurrent if/switch calls and
-    // correctly group executions
+    // Same-position branches across concurrent scope calls (if/switch) within the same execution
+    // will have colliding partition keys. To handle this, we use the order key to distinguish
+    // scope calls and partition key for the branch within.
     const branchKey = `$${orderKey}/${partitionKey ?? 0}`;
 
     const scopeSyncPartition =
