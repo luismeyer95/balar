@@ -1,4 +1,4 @@
-import { Result } from './primitives';
+import { ExecutionResultsInternal } from './primitives';
 
 export type ProcessorFn<In, Out> = (request: In) => Promise<Out>;
 
@@ -71,7 +71,7 @@ export type BulkOperation<In, Out, Args extends readonly unknown[]> = {
 export type ScopeOperation<In, Out> = {
   input: In[];
   fnByInput: Map<In, (request: In) => Promise<Out>>;
-  call: DeferredPromise<Result<In, Out>> | null;
+  call: DeferredPromise<ExecutionResultsInternal<In, Out>> | null;
 };
 
 /**

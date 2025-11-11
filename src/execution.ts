@@ -6,7 +6,12 @@ import {
   BulkFn,
 } from './api';
 import { EXECUTION, PROCESSOR_ID } from './constants';
-import { BalarError, BalarStopError, Result } from './primitives';
+import {
+  BalarError,
+  BalarStopError,
+  ExecutionResults,
+  ExecutionResultsInternal,
+} from './primitives';
 import crypto from 'node:crypto';
 import { chunk } from './utils';
 
@@ -63,14 +68,23 @@ export async function run<In, Out>(
   inputs: In[],
   processor: (request: In) => Promise<Out>,
   opts: ExecutionOptions = {},
-): Promise<Result<In, Out>> {
+): Promise<ExecutionResults<In, Out>> {
   const execution = EXECUTION.getStore();
 
-  if (!execution) {
-    return new BalarExecution(processor, opts).run(inputs);
-  }
+  const results = execution
+    ? await execution.runScope(inputs, processor)
+    : await new BalarExecution(processor, opts).run(inputs);
 
-  return execution.runScope(inputs, processor);
+  const successes = Array.from(results.successes.entries()).map(([input, result]) => ({
+    input,
+    result,
+  }));
+  const errors = Array.from(results.errors.entries()).map(([input, err]) => ({
+    input,
+    err,
+  }));
+
+  return [successes, errors];
 }
 
 export class BalarExecution<MainIn, MainOut> {
@@ -139,7 +153,7 @@ export class BalarExecution<MainIn, MainOut> {
     return call;
   }
 
-  async run(requests: MainIn[]): Promise<Result<MainIn, MainOut>> {
+  async run(requests: MainIn[]): Promise<ExecutionResultsInternal<MainIn, MainOut>> {
     this.logger?.('starting execution for requests: ', requests);
 
     const successes = new Map<MainIn, MainOut>();
@@ -339,7 +353,7 @@ export class BalarExecution<MainIn, MainOut> {
     requests: In[],
     processor: (request: In) => Promise<Out>,
     partitionKey?: number,
-  ): Promise<Result<In, Out>> {
+  ): Promise<ExecutionResultsInternal<In, Out>> {
     const processorId = PROCESSOR_ID.getStore();
     if (processorId == null) {
       throw new BalarError('balar error: missing processor ID');
@@ -370,7 +384,8 @@ export class BalarExecution<MainIn, MainOut> {
       process.nextTick(() => this.executeCheckpoint());
     }
 
-    const allResults = (await scopeSyncPartition.call?.cachedPromise) as Result<In, Out>;
+    const allResults = (await scopeSyncPartition.call
+      ?.cachedPromise) as ExecutionResultsInternal<In, Out>;
 
     const result = {
       successes: new Map<In, Out>(),

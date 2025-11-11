@@ -6,7 +6,11 @@ import {
   BudgetsRepository,
   UpdateIssues as Issues,
 } from './fakes/budget.fake';
-import { expectToHaveBeenCalledWithUnordered } from './utils/jest-extensions';
+import {
+  expectErrorsToMatch,
+  expectSuccessesToMatch,
+  expectToHaveBeenCalledWithUnordered,
+} from './utils/jest-extensions';
 
 describe('tests', () => {
   const accountsRepo = new AccountsRepository();
@@ -116,12 +120,13 @@ describe('tests', () => {
           double,
         });
 
-        const { successes: result } = await balar.run([1, 5, 3], async (arg) => {
+        const [result] = await balar.run([1, 5, 3], async (arg) => {
           const x: number = await registry.double(arg);
           return x;
         });
 
-        expect(result).toEqual(
+        expectSuccessesToMatch(
+          result,
           new Map([
             [1, 2],
             [5, 10],
@@ -140,11 +145,12 @@ describe('tests', () => {
         }
         const registry = balar.wrap.object(new Doubler());
 
-        const { successes: result } = await balar.run([1, 5, 3], (arg) => {
+        const [result] = await balar.run([1, 5, 3], (arg) => {
           return registry.double(arg);
         });
 
-        expect(result).toEqual(
+        expectSuccessesToMatch(
+          result,
           new Map([
             [1, 2],
             [5, 10],
@@ -265,11 +271,12 @@ describe('tests', () => {
         // @ts-expect-error -- the bulk function input type is an array
         registry.takesArrayInput;
 
-        const { successes: results } = await balar.run([1, 2], async function (arg) {
+        const [results] = await balar.run([1, 2], async function (arg) {
           return registry.base(arg).then((arg) => registry.derived(arg!));
         });
 
-        expect(results).toEqual(
+        expectSuccessesToMatch(
+          results,
           new Map([
             [1, 1],
             [2, 2],
@@ -302,7 +309,7 @@ describe('tests', () => {
         budgetsRepo.spendOnBudget(2, 450);
 
         // Act
-        const { successes: resultWithScalarApi } = await balar.run(
+        const [resultWithScalarApi] = await balar.run(
           [1, 2],
           async function getRemainingAmount(budgetId: number): Promise<number> {
             const currentBudget = await registry.getCurrentBudgets(budgetId);
@@ -313,7 +320,7 @@ describe('tests', () => {
         );
 
         // Act
-        const { successes: resultWithBulkApi } = await balar.run(
+        const [resultWithBulkApi] = await balar.run(
           [1, 2],
           async function getRemainingAmount(budgetId: number): Promise<number> {
             const currentBudget = (await registry.getCurrentBudgets([budgetId])).get(
@@ -328,7 +335,8 @@ describe('tests', () => {
         );
 
         expect(resultWithScalarApi).toEqual(resultWithBulkApi);
-        expect(resultWithBulkApi).toEqual(
+        expectSuccessesToMatch(
+          resultWithBulkApi,
           new Map([
             [1, 300],
             [2, 550],
@@ -357,10 +365,11 @@ describe('tests', () => {
 
     test('no op processor', async () => {
       // Act
-      const { successes: result } = await balar.run([1, 2], async function () {});
+      const [result] = await balar.run([1, 2], async function () {});
 
       // Assert
-      expect(result).toEqual(
+      expectSuccessesToMatch(
+        result,
         new Map([
           [1, undefined],
           [2, undefined],
@@ -370,15 +379,15 @@ describe('tests', () => {
 
     test('duplicate inputs', async () => {
       // Act
-      const { successes: result } = await balar.run([1, 1], async function () {});
+      const [result] = await balar.run([1, 1], async function () {});
 
       // Assert
-      expect(result).toEqual(new Map([[1, undefined]]));
+      expectSuccessesToMatch(result, new Map([[1, undefined]]));
     });
 
     test('empty inputs', async () => {
       // Act
-      const { successes: result } = await balar.run(
+      const [result] = await balar.run(
         [],
         async function getBudgetAmount(budgetId: number): Promise<number> {
           const currentBudget = await registry.getCurrentBudgets(budgetId);
@@ -387,20 +396,20 @@ describe('tests', () => {
       );
 
       // Assert
-      expect(result).toEqual(new Map());
+      expect(result).toEqual([]);
     });
 
     test('no output from bulk fn for given input', async () => {
       // Act
-      const { successes: result } = await balar.run(
-        [1, 2],
-        async function (id: number): Promise<number | undefined> {
-          return registry.noop(id);
-        },
-      );
+      const [result] = await balar.run([1, 2], async function (id: number): Promise<
+        number | undefined
+      > {
+        return registry.noop(id);
+      });
 
       // Assert
-      expect(result).toEqual(
+      expectSuccessesToMatch(
+        result,
         new Map([
           [1, undefined],
           [2, undefined],
@@ -410,7 +419,7 @@ describe('tests', () => {
 
     test('bulk fn called thrice', async () => {
       // Act
-      const { successes: result } = await balar.run([1, 2], async (id: number) => {
+      const [result] = await balar.run([1, 2], async (id: number) => {
         await registry.noop(id);
         await registry.noop(id * 2);
         return registry.noop(id);
@@ -421,7 +430,8 @@ describe('tests', () => {
       expect(spies.noop.mock.calls[0][0]).toEqual([1, 2]);
       expect(spies.noop.mock.calls[1][0]).toEqual([2, 4]);
       expect(spies.noop.mock.calls[2][0]).toEqual([1, 2]);
-      expect(result).toEqual(
+      expectSuccessesToMatch(
+        result,
         new Map([
           [1, undefined],
           [2, undefined],
@@ -431,17 +441,14 @@ describe('tests', () => {
 
     test('simple workflow with 1 checkpoint', async () => {
       // Act
-      const { successes: result } = await balar.run(
-        [1],
-        async function (id: number): Promise<number> {
-          const currentBudget = await registry.getCurrentBudgets(id);
-          return currentBudget!.amount;
-        },
-      );
+      const [result] = await balar.run([1], async function (id: number): Promise<number> {
+        const currentBudget = await registry.getCurrentBudgets(id);
+        return currentBudget!.amount;
+      });
 
       // Assert
       const expected = new Map([[1, 500]]);
-      expect(result).toEqual(expected);
+      expectSuccessesToMatch(result, expected);
 
       expect(spies.getCurrentBudgets).toHaveBeenCalledTimes(1);
     });
@@ -457,7 +464,7 @@ describe('tests', () => {
         { id: 3, amount: 1 }, // fail: can't lower (from 1500 to 1)
         { id: 4, amount: 3000 }, // fail (forced failure)
       ];
-      const { successes: issues } = await balar.run(
+      const [issues] = await balar.run(
         requests,
         async function updateBudgetWithValidation(request: {
           id: number;
@@ -490,7 +497,7 @@ describe('tests', () => {
         [{ id: 3, amount: 1 }, 'budget must not be lowered'],
         [{ id: 4, amount: 3000 }, 'budget update failed'],
       ]);
-      expect(issues).toEqual(expected);
+      expectSuccessesToMatch(issues, expected);
 
       expect(spies.getCurrentBudgets).toHaveBeenCalledTimes(1);
       expect(spies.updateBudgets).toHaveBeenCalledTimes(1);
@@ -507,7 +514,7 @@ describe('tests', () => {
         { id: 3, amount: 1 }, // fail: can't lower (from 1500 to 1)
         { id: 4, amount: 3000 }, // fail (forced failure)
       ];
-      const { successes: issues } = await balar.run(
+      const [issues] = await balar.run(
         requests,
         async function updateBudgetWithValidation(request: {
           id: number;
@@ -548,7 +555,7 @@ describe('tests', () => {
         [{ id: 3, amount: 1 }, new Issues('budget must not be lowered')],
         [{ id: 4, amount: 3000 }, new Issues('budget update failed')],
       ]);
-      expect(issues).toEqual(expected);
+      expectSuccessesToMatch(issues, expected);
 
       expect(spies.getCurrentBudgets).toHaveBeenCalledTimes(1);
       expect(spies.getCurrentBudgets).toHaveBeenCalledWith([1, 3, 4]);
@@ -571,7 +578,7 @@ describe('tests', () => {
 
       // Act
       const budgetIds = [1, 2, 3, 4];
-      const { successes: issues } = await balar.run(budgetIds, async (n) => {
+      const [issues] = await balar.run(budgetIds, async (n) => {
         return n % 2 === 0 ? registry.mul(n, 2) : registry.mul(n, 3);
       });
 
@@ -582,7 +589,7 @@ describe('tests', () => {
         [3, 9],
         [4, 8],
       ]);
-      expect(issues).toEqual(expected);
+      expectSuccessesToMatch(issues, expected);
       expect(spyBulkMul).toHaveBeenCalledTimes(2);
       expect(spyBulkMul).toHaveBeenCalledWith([1, 3], 3);
       expect(spyBulkMul).toHaveBeenCalledWith([2, 4], 2);
@@ -599,7 +606,7 @@ describe('tests', () => {
       budgetsRepo.spendOnBudget(5, 6);
 
       // Act/Assert
-      const { successes: result } = await balar.run(
+      const [result] = await balar.run(
         [accountId1, accountId2],
         async function getSpendOfAccount(accountId) {
           const account = await registry.getAccountsById(accountId);
@@ -623,7 +630,7 @@ describe('tests', () => {
         [accountId1, 201],
         [accountId2, 10],
       ]);
-      expect(result).toEqual(expected);
+      expectSuccessesToMatch(result, expected);
     });
   });
 
@@ -636,7 +643,7 @@ describe('tests', () => {
 
       // Act
       const budgetIds = [1, 2, 3, 4];
-      const { successes: issues } = await balar.run(
+      const [issues] = await balar.run(
         budgetIds,
         async function (budgetId: number): Promise<Issues | true> {
           const issues = new Issues();
@@ -664,7 +671,7 @@ describe('tests', () => {
         [3, new Issues('current spend is above limit: 5000 > 1500')],
         [4, true],
       ]);
-      expect(issues).toEqual(expected);
+      expectSuccessesToMatch(issues, expected);
 
       expect(spies.getCurrentBudgets).toHaveBeenCalledTimes(1);
       expect(spies.getBudgetSpends).toHaveBeenCalledTimes(1);
@@ -688,12 +695,12 @@ describe('tests', () => {
         [1, 500],
         [2, 1000],
       ]);
-      expect(result1.successes).toEqual(expected1);
+      expectSuccessesToMatch(result1[0], expected1);
       const expected2 = new Map([
         [3, 1500],
         [4, 2000],
       ]);
-      expect(result2.successes).toEqual(expected2);
+      expectSuccessesToMatch(result2[0], expected2);
       expect(spies.getCurrentBudgets).toHaveBeenCalledTimes(2);
     });
 
@@ -705,7 +712,7 @@ describe('tests', () => {
 
       // Act
       const budgetIds = [1, 2, 3, 4];
-      const { successes: results } = await balar.run(
+      const [results] = await balar.run(
         budgetIds,
         async function getRemainingBudget(budgetId: number) {
           // Arbitrary return for ID 4
@@ -729,7 +736,7 @@ describe('tests', () => {
         [3, -3500],
         [4, 'budget does not exist'],
       ]);
-      expect(results).toEqual(expected);
+      expectSuccessesToMatch(results, expected);
 
       expect(spies.getCurrentBudgets).toHaveBeenCalledTimes(1);
       expect(spies.getCurrentBudgets).toHaveBeenCalledWith([1, 2, 3]);
@@ -741,7 +748,7 @@ describe('tests', () => {
     test('checkpoint-triggering processor calls multiple scalar fns', async () => {
       // Act
       const budgetIds = [1, 2, 3, 4];
-      const { successes: issues } = await balar.run(budgetIds, async (n) => {
+      const [issues] = await balar.run(budgetIds, async (n) => {
         let p1 = registry.identity1(n);
         let p2: Promise<number | undefined> = Promise.resolve(0);
 
@@ -760,7 +767,7 @@ describe('tests', () => {
         [3, 6],
         [4, 8],
       ]);
-      expect(issues).toEqual(expected);
+      expectSuccessesToMatch(issues, expected);
 
       expect(spies.identity1).toHaveBeenCalledTimes(1);
       expect(spies.identity1).toHaveBeenCalledWith([1, 2, 3, 4]);
@@ -773,7 +780,7 @@ describe('tests', () => {
     test('should deduplicate equal inputs to bulk fn', async () => {
       // Act
       const requestIds = [1, 2, 3]; // all budgets are under the same account
-      const { successes: issues } = await balar.run(
+      const [issues] = await balar.run(
         requestIds,
         async function processor(budgetId: number) {
           const budget = await registry.getCurrentBudgets(budgetId);
@@ -788,7 +795,7 @@ describe('tests', () => {
         [2, account1],
         [3, account1],
       ]);
-      expect(issues).toEqual(expected);
+      expectSuccessesToMatch(issues, expected);
 
       expect(spies.getCurrentBudgets).toHaveBeenCalledTimes(1);
       expect(spies.getCurrentBudgets).toHaveBeenCalledWith(requestIds);
@@ -800,7 +807,7 @@ describe('tests', () => {
   describe('exceptions', () => {
     test('should collect exceptions thrown inside processor', async () => {
       // Act
-      const { successes, errors } = await balar.run(
+      const [successes, errors] = await balar.run(
         [1, 2, 777 /* does not exist */],
         async function getBudgetOrThrowIfNotExist(id: number): Promise<number> {
           const currentBudget = await registry.getCurrentBudgets(id);
@@ -815,8 +822,9 @@ describe('tests', () => {
       // Assert
       // await expect(runCall).rejects.toThrow('budget does not exist');
       expect(spies.getCurrentBudgets).toHaveBeenCalledTimes(1);
-      expect(errors).toEqual(new Map([[777, new Error('budget does not exist')]]));
-      expect(successes).toEqual(
+      expectErrorsToMatch(errors, new Map([[777, new Error('budget does not exist')]]));
+      expectSuccessesToMatch(
+        successes,
         new Map([
           [1, 500],
           [2, 1000],
@@ -841,7 +849,7 @@ describe('tests', () => {
       });
 
       // Act
-      const { successes, errors } = await balar.run(
+      const [successes, errors] = await balar.run(
         [1, 2, 777],
         async function (id: number) {
           try {
@@ -856,8 +864,9 @@ describe('tests', () => {
       expect(mayThrow).toHaveBeenCalledTimes(1);
       expect(mayThrow).toHaveBeenCalledWith([1, 2, 777]);
       // Errors were caught and returned => exposed as success
-      expect(errors).toEqual(new Map());
-      expect(successes).toEqual(
+      expect(errors).toEqual([]);
+      expectSuccessesToMatch(
+        successes,
         new Map([
           [1, 'budget does not exist'],
           [2, 'budget does not exist'],
@@ -868,7 +877,7 @@ describe('tests', () => {
 
     test('throwing regular error in 1 processor should not disrupt others', async () => {
       // Act
-      const { successes, errors } = await balar.run(
+      const [successes, errors] = await balar.run(
         [1, 2, 3, 4],
         async function (id: number) {
           if (id % 2 === 0) {
@@ -880,13 +889,15 @@ describe('tests', () => {
       );
 
       // Assert
-      expect(errors).toEqual(
+      expectErrorsToMatch(
+        errors,
         new Map([
           [2, 'even'],
           [4, 'even'],
         ]),
       );
-      expect(successes).toEqual(
+      expectSuccessesToMatch(
+        successes,
         new Map([
           [1, 1],
           [3, 3],
@@ -898,7 +909,7 @@ describe('tests', () => {
       // Act
       const errorToken = new BalarStopError('error token');
 
-      const { successes, errors } = await balar.run(
+      const [successes, errors] = await balar.run(
         [1, 2, 3, 4],
         async function (id: number) {
           if (id % 2 === 0) {
@@ -910,7 +921,8 @@ describe('tests', () => {
       );
 
       // Assert
-      expect(errors).toEqual(
+      expectErrorsToMatch(
+        errors,
         new Map([
           [1, errorToken],
           [2, errorToken],
@@ -918,7 +930,7 @@ describe('tests', () => {
           [4, errorToken],
         ]),
       );
-      expect(successes).toEqual(new Map([]));
+      expectSuccessesToMatch(successes, new Map([]));
       expect(spies.identity).toHaveBeenCalledTimes(0);
     });
   });
@@ -926,25 +938,23 @@ describe('tests', () => {
   describe('branching', () => {
     test('simple branching', async () => {
       // Act
-      const { successes: result } = await balar.run(
-        [1, 2, 3, 4],
-        async function (id: number) {
-          const result = await (() => {
-            if (id % 2 === 0) {
-              return registry.identity1(id);
-            } else {
-              return registry.identity2(id);
-            }
-          })();
+      const [result] = await balar.run([1, 2, 3, 4], async function (id: number) {
+        const result = await (() => {
+          if (id % 2 === 0) {
+            return registry.identity1(id);
+          } else {
+            return registry.identity2(id);
+          }
+        })();
 
-          return result;
-        },
-      );
+        return result;
+      });
 
       // Assert
       expect(spies.identity1).toHaveBeenNthCalledWith(1, [2, 4]);
       expect(spies.identity2).toHaveBeenNthCalledWith(1, [1, 3]);
-      expect(result).toEqual(
+      expectSuccessesToMatch(
+        result,
         new Map([
           [1, 1],
           [2, 2],
@@ -956,29 +966,28 @@ describe('tests', () => {
 
     test('scalar vs nested run', async () => {
       // Act
-      const { successes: result } = await balar.run(
-        [1, 2, 3, 4],
-        async function (id: number) {
-          const result = await (async () => {
-            if (id % 2 === 0) {
-              return registry.identity(id);
-            } else {
-              return balar
-                .run([id * 10, id * 100], (id) => registry.identity(id))
-                .then((res) => res.successes);
-            }
-          })();
+      const [result] = await balar.run([1, 2, 3, 4], async function (id: number) {
+        const result = await (async () => {
+          if (id % 2 === 0) {
+            return registry.identity(id);
+          } else {
+            const [successes] = await balar.run([id * 10, id * 100], (id) =>
+              registry.identity(id),
+            );
+            return successes;
+          }
+        })();
 
-          return typeof result === 'number' ? result : [...result!.values()];
-        },
-      );
+        return typeof result === 'number' ? result : result?.map((res) => res.result);
+      });
 
       // Assert
       expect(spies.identity).toHaveBeenNthCalledWith(1, [2, 4]);
       expect(spies.identity).toHaveBeenNthCalledWith(2, [10, 100, 30, 300]);
       expect(spies.identity).toHaveBeenCalledTimes(2);
 
-      expect(result).toEqual(
+      expectSuccessesToMatch(
+        result,
         new Map<number, number | number[]>([
           [1, [10, 100]],
           [2, 2],
@@ -990,7 +999,7 @@ describe('tests', () => {
 
     test('binary search', async () => {
       // Act
-      const { successes: result } = await balar.run(
+      const [result] = await balar.run(
         [0, 1, 2, 3, 4, 5, 6, 7, 8],
         async function search(id: number) {
           if (await registry.lt(id, 5)) {
@@ -1024,7 +1033,8 @@ describe('tests', () => {
       expect(spies.lt).toHaveBeenCalledTimes(4);
       expect(spies.gt).toHaveBeenCalledTimes(2);
 
-      expect(result).toEqual(
+      expectSuccessesToMatch(
+        result,
         new Map(
           Array(9)
             .fill(0)
@@ -1045,7 +1055,7 @@ describe('tests', () => {
 
     test('1-level deep scope should sync input processors at 0th level', async () => {
       // Act/Assert
-      const { successes: result } = await balar.run(
+      const [result] = await balar.run(
         [accountId1, accountId2],
         async function getSpendOfAccount(accountId) {
           const account = await registry.getAccountsById(accountId);
@@ -1053,11 +1063,13 @@ describe('tests', () => {
             return null;
           }
 
-          const { successes: spends } = await balar.run(account.budgetIds, (budgetId) =>
+          const [spends] = await balar.run(account.budgetIds, (budgetId) =>
             registry.getBudgetSpends(budgetId).then((s) => s!),
           );
 
-          return [...spends!.values()].reduce((acc, spend) => acc + (spend || 0), 0);
+          return spends
+            .map((s) => s.result)
+            .reduce((acc, spend) => acc + (spend || 0), 0);
         },
       );
 
@@ -1071,52 +1083,50 @@ describe('tests', () => {
         [accountId1, 201],
         [accountId2, 10],
       ]);
-      expect(result).toEqual(expected);
+      expectSuccessesToMatch(result, expected);
     });
 
     test('multiple scope nesting levels with processing before and after nestings', async () => {
       // Act
-      const { successes: result } = await balar.run(
-        [10, 15, 30],
-        async function (a: number) {
-          await registry.identity1(a); // [10, 15, 30]
+      const [result] = await balar.run([10, 15, 30], async function (a: number) {
+        await registry.identity1(a); // [10, 15, 30]
 
-          const result = await balar
-            .run([a + 1, a + 11], async (b) => {
-              // [11, 21, 16, 26, 31, 41]
-              if (b % 2 === 0) {
-                return -1;
-              }
-              // [11, 21, 31, 41]
+        const result = await balar
+          .run([a + 1, a + 11], async (b) => {
+            // [11, 21, 16, 26, 31, 41]
+            if (b % 2 === 0) {
+              return -1;
+            }
+            // [11, 21, 31, 41]
 
-              await Promise.all([registry.identity1(b), registry.identity2(b)]); // [11, 21, 31, 41] * 2
+            await Promise.all([registry.identity1(b), registry.identity2(b)]); // [11, 21, 31, 41] * 2
 
-              const result = await balar
-                .run([b + 1, b + 11], async (c: number) => {
-                  // [12, 22, 32, 42, 52]
-                  const [one, two] = [registry.identity1(c), registry.identity2(c)]; // [12, 22, 32, 42, 52] * 2
-                  await two;
-                  await one;
+            const result = await balar
+              .run([b + 1, b + 11], async (c: number) => {
+                // [12, 22, 32, 42, 52]
+                const [one, two] = [registry.identity1(c), registry.identity2(c)]; // [12, 22, 32, 42, 52] * 2
+                await two;
+                await one;
 
-                  return c;
-                })
-                .then((res) => res.successes);
+                return c;
+              })
+              .then(([success]) => success);
 
-              return [...result.values()];
-            })
-            .then((res) => res.successes);
+            return [...new Map(result.map((s) => [s.input, s.result])).values()];
+          })
+          .then(([success]) => success);
 
-          await registry.identity2(a);
-          return [...result.values()];
-        },
-      );
+        await registry.identity2(a);
+        return result.map((s) => s.result);
+      });
 
       // Assert
       expect(spies.identity2).toHaveBeenCalledTimes(3);
       expect(spies.identity2).toHaveBeenNthCalledWith(1, [11, 21, 31, 41]);
       expect(spies.identity2).toHaveBeenNthCalledWith(2, [12, 22, 32, 42, 52]);
       expect(spies.identity2).toHaveBeenNthCalledWith(3, [10, 15, 30]);
-      expect(result).toEqual(
+      expectSuccessesToMatch(
+        result,
         new Map<number, (number[] | -1)[]>([
           [
             10,
@@ -1139,7 +1149,7 @@ describe('tests', () => {
 
     test('return from level-1 scope should restore level-0 scope syncing', async () => {
       // Act/Assert
-      const { successes: result } = await balar.run(
+      const [result] = await balar.run(
         [accountId1, accountId2],
         async function getSpendOfAccount(accountId) {
           const account = await registry.getAccountsById(accountId);
@@ -1148,14 +1158,16 @@ describe('tests', () => {
           }
 
           // Run nested run() context
-          const { successes: spends } = await balar.run(account.budgetIds, (budgetId) =>
+          const [spends] = await balar.run(account.budgetIds, (budgetId) =>
             registry.getBudgetSpends(budgetId),
           );
 
           let maxSpendingBudgetId = 0;
-          for (const [budgetId, amount] of spends) {
-            if (!maxSpendingBudgetId || amount! > spends.get(maxSpendingBudgetId)!) {
-              maxSpendingBudgetId = budgetId;
+          let maxSpend = 0;
+          for (const [budgetId, amount] of spends.map((s) => [s.input, s.result])) {
+            if (!maxSpendingBudgetId || amount! > maxSpend) {
+              maxSpend = amount!;
+              maxSpendingBudgetId = budgetId!;
             }
           }
 
@@ -1177,7 +1189,7 @@ describe('tests', () => {
         [accountId1, { accountId: accountId1, amount: 500 }], // budget 1
         [accountId2, { accountId: accountId2, amount: 2500 }], // budget 5
       ]);
-      expect(result).toEqual(expected);
+      expectSuccessesToMatch(result, expected);
     });
   });
 
@@ -1209,7 +1221,7 @@ describe('tests', () => {
     test('bulk fn with extended arglist', async () => {
       // Act
       const budgetIds = [1, 2, 3, 4];
-      const { successes: issues } = await balar.run(budgetIds, async (n) => {
+      const [issues] = await balar.run(budgetIds, async (n) => {
         return n % 2 === 0 ? registry.mul(n, 2) : registry.mul(n, 3);
       });
 
@@ -1220,7 +1232,7 @@ describe('tests', () => {
         [3, 9],
         [4, 8],
       ]);
-      expect(issues).toEqual(expected);
+      expectSuccessesToMatch(issues, expected);
       expect(gulkMul).toHaveBeenCalledTimes(2);
       expect(gulkMul).toHaveBeenCalledWith([1, 3], 3);
       expect(gulkMul).toHaveBeenCalledWith([2, 4], 2);
@@ -1229,7 +1241,7 @@ describe('tests', () => {
     test('extra object arg with default args hash resolver', async () => {
       // Act
       const budgetIds = [1, 2, 3, 4];
-      const { successes: issues } = await balar.run(budgetIds, async (n) => {
+      const [issues] = await balar.run(budgetIds, async (n) => {
         return n % 2 === 0
           ? registry.mulObj(n, { rhs: 2 })
           : registry.mulObj(n, { rhs: 3 });
@@ -1242,7 +1254,7 @@ describe('tests', () => {
         [3, 9],
         [4, 8],
       ]);
-      expect(issues).toEqual(expected);
+      expectSuccessesToMatch(issues, expected);
       expect(gulkMulObj).toHaveBeenCalledTimes(2);
       expect(gulkMulObj).toHaveBeenCalledWith([1, 3], { rhs: 3 });
       expect(gulkMulObj).toHaveBeenCalledWith([2, 4], { rhs: 2 });
@@ -1268,7 +1280,7 @@ describe('tests', () => {
 
       test('as expr', async () => {
         // Act
-        const { successes: result } = await balar.run([1, 2, 3, 4], async (n) => {
+        const [result] = await balar.run([1, 2, 3, 4], async (n) => {
           const tripled = await balar.if(n % 2 === 0, () => registry.mul(n, 3));
           const same = registry.identity(n);
 
@@ -1282,7 +1294,7 @@ describe('tests', () => {
           [3, 3],
           [4, 12],
         ]);
-        expect(result).toEqual(expected);
+        expectSuccessesToMatch(result, expected);
 
         expect(spies.mul).toHaveBeenCalledTimes(1);
         expect(spies.mul).toHaveBeenCalledWith([2, 4], 3);
@@ -1293,7 +1305,7 @@ describe('tests', () => {
 
       test('concurrent if + bulk fn', async () => {
         // Act
-        const { successes: result } = await balar.run([1, 2, 3, 4], async (n) => {
+        const [result] = await balar.run([1, 2, 3, 4], async (n) => {
           const [tripled, same] = await Promise.all([
             balar.if(n % 2 === 0, () => registry.mul(n, 3)),
             registry.identity(n),
@@ -1309,7 +1321,7 @@ describe('tests', () => {
           [3, 3],
           [4, 12],
         ]);
-        expect(result).toEqual(expected);
+        expectSuccessesToMatch(result, expected);
 
         expect(spies.mul).toHaveBeenCalledTimes(1);
         expect(spies.mul).toHaveBeenCalledWith([2, 4], 3);
@@ -1319,7 +1331,7 @@ describe('tests', () => {
 
       test('if / else', async () => {
         // Act
-        const { successes: result } = await balar.run([1, 2, 3, 4], async (n) => {
+        const [result] = await balar.run([1, 2, 3, 4], async (n) => {
           return balar.if(
             n % 2 === 0,
             () => registry.mul(n, 3),
@@ -1334,7 +1346,7 @@ describe('tests', () => {
           [3, 3],
           [4, 12],
         ]);
-        expect(result).toEqual(expected);
+        expectSuccessesToMatch(result, expected);
 
         expect(spies.mul).toHaveBeenCalledTimes(1);
         expect(spies.mul).toHaveBeenCalledWith([2, 4], 3);
@@ -1344,7 +1356,7 @@ describe('tests', () => {
 
       test('try / catch', async () => {
         // Act
-        const { successes: result } = await balar.run([1, 2, 3, 4], async (n) => {
+        const [result] = await balar.run([1, 2, 3, 4], async (n) => {
           try {
             return await balar.if(
               n % 2 === 0,
@@ -1365,7 +1377,7 @@ describe('tests', () => {
           [3, 3],
           [4, 12],
         ]);
-        expect(result).toEqual(expected);
+        expectSuccessesToMatch(result, expected);
       });
 
       test('concurrent if', async () => {
@@ -1379,7 +1391,7 @@ describe('tests', () => {
 
             return tripled ?? doubled;
           })
-          .then((res) => res.successes);
+          .then(([successes]) => successes);
 
         // Assert
         const expected = new Map([
@@ -1388,7 +1400,7 @@ describe('tests', () => {
           [3, undefined],
           [4, 12],
         ]);
-        expect(result).toEqual(expected);
+        expectSuccessesToMatch(result, expected);
       });
 
       test('always false if', async () => {
@@ -1397,14 +1409,14 @@ describe('tests', () => {
           .run([1, 2], async (n) => {
             return balar.if(false, () => registry.identity(n));
           })
-          .then((res) => res.successes);
+          .then(([successes]) => successes);
 
         // Assert
         const expected = new Map([
           [1, undefined],
           [2, undefined],
         ]);
-        expect(result).toEqual(expected);
+        expectSuccessesToMatch(result, expected);
       });
 
       test('binary search', async () => {
@@ -1429,7 +1441,7 @@ describe('tests', () => {
               },
             );
           })
-          .then((res) => res.successes);
+          .then(([successes]) => successes);
 
         // Assert
         const expected = new Map([
@@ -1438,7 +1450,7 @@ describe('tests', () => {
           [3, 3],
           [4, 4],
         ]);
-        expect(result).toEqual(expected);
+        expectSuccessesToMatch(result, expected);
       });
 
       test('each branch runs concurrently', async () => {
@@ -1471,7 +1483,7 @@ describe('tests', () => {
     describe('switch', () => {
       test('only default', async () => {
         // Act
-        const { successes: result } = await balar.run([1, 2], async (n) => {
+        const [result] = await balar.run([1, 2], async (n) => {
           return balar.switch(() => registry.identity(n));
         });
 
@@ -1480,12 +1492,12 @@ describe('tests', () => {
           [1, 1],
           [2, 2],
         ]);
-        expect(result).toEqual(expected);
+        expectSuccessesToMatch(result, expected);
       });
 
       test('only case (non exhaustive)', async () => {
         // Act
-        const { successes: result } = await balar.run([1, 2], async (n) => {
+        const [result] = await balar.run([1, 2], async (n) => {
           return balar.switch([n === 1, () => registry.identity(n)]);
         });
 
@@ -1494,12 +1506,12 @@ describe('tests', () => {
           [1, 1],
           [2, undefined],
         ]);
-        expect(result).toEqual(expected);
+        expectSuccessesToMatch(result, expected);
       });
 
       test('both case and default', async () => {
         // Act
-        const { successes: result } = await balar.run([1, 2, 3], async (n) => {
+        const [result] = await balar.run([1, 2, 3], async (n) => {
           const result1 = await balar.switch(n, [
             [2, async () => 4],
             [3, async () => 6],
@@ -1525,12 +1537,12 @@ describe('tests', () => {
           [2, 4],
           [3, 6],
         ]);
-        expect(result).toEqual(expected);
+        expectSuccessesToMatch(result, expected);
       });
 
       test('as if / elseif / else', async () => {
         // Act
-        const { successes: result } = await balar.run([1, 2, 3, 4, 5], async (n) => {
+        const [result] = await balar.run([1, 2, 3, 4, 5], async (n) => {
           return balar.switch(
             [n % 2 === 0, () => registry.div(n, 2)],
             [n < 5, () => registry.mul(n, 2)],
@@ -1546,7 +1558,7 @@ describe('tests', () => {
           [4, 2],
           [5, 5],
         ]);
-        expect(result).toEqual(expected);
+        expectSuccessesToMatch(result, expected);
 
         expect(spies.div).toHaveBeenCalledTimes(1);
         expect(spies.div).toHaveBeenCalledWith([2, 4], 2);
@@ -1558,7 +1570,7 @@ describe('tests', () => {
 
       test('batches within branch', async () => {
         // Act
-        const { successes: result } = await balar.run([1, 2, 3, 4], async (n) => {
+        const [result] = await balar.run([1, 2, 3, 4], async (n) => {
           return balar.switch(n, [
             [2, () => registry.div(n, 2)],
             [3, () => registry.mul(n, 2)],
@@ -1573,7 +1585,7 @@ describe('tests', () => {
           [3, 6],
           [4, 4],
         ]);
-        expect(result).toEqual(expected);
+        expectSuccessesToMatch(result, expected);
 
         expect(spies.div).toHaveBeenCalledTimes(1);
         expect(spies.div).toHaveBeenCalledWith([2], 2);
@@ -1608,7 +1620,7 @@ describe('tests', () => {
   describe('complex', () => {
     test('fizzbuzz', async () => {
       // Act
-      const { successes } = await balar.run([1, 3, 5, 7, 9, 15, 30], async (n) => {
+      const [successes] = await balar.run([1, 3, 5, 7, 9, 15, 30], async (n) => {
         const one = await balar.if(n % 15 === 0, () => registry.div(n, 15));
         const two = await balar.if(n % 3 === 0, () => registry.div(n, 3));
         const three = await balar.if(n % 5 === 0, () => registry.div(n, 5));
@@ -1629,7 +1641,8 @@ describe('tests', () => {
       expect(spies.mul).toHaveBeenCalledTimes(1);
       expect(spies.mul).toHaveBeenCalledWith([1, 7], 10);
 
-      expect(successes).toEqual(
+      expectSuccessesToMatch(
+        successes,
         new Map([
           [1, 10],
           [3, 1],
