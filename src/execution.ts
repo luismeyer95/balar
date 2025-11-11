@@ -1,9 +1,9 @@
 import {
   ExecutionOptions,
-  BulkOperation,
+  BatchOperation,
   ScopeOperation,
   DeferredPromise,
-  BulkFn,
+  BatchFn,
 } from './api';
 import { EXECUTION, PROCESSOR_ID } from './constants';
 import {
@@ -16,7 +16,7 @@ import crypto from 'node:crypto';
 import { chunk } from './utils';
 
 /**
- * Processes a batch of inputs using the provided processor function and returns the results keyed by input. When a wrapped bulk function (obtained via `balar.wrap.fns()` or `balar.wrap.object()`) is called inside `balar.run()`, inputs are collected across all executions of the processor function so that only a single call to the underlying bulk function is performed.
+ * Processes a batch of inputs using the provided processor function and returns the results keyed by input. When a wrapped batch function (obtained via `balar.wrap.fns()` or `balar.wrap.object()`) is called inside `balar.run()`, inputs are collected across all executions of the processor function so that only a single call to the underlying batch function is performed.
  *
  * @param inputs - The array of inputs to process.
  * @param processor - An asynchronous function that processes each individual input.
@@ -88,7 +88,7 @@ export async function run<In, Out>(
 }
 
 export class BalarExecution<MainIn, MainOut> {
-  checkpointCache: Map<string, BulkOperation<unknown, unknown, unknown[]>> = new Map();
+  checkpointCache: Map<string, BatchOperation<unknown, unknown, unknown[]>> = new Map();
 
   scopeSyncCache: Map<string, ScopeOperation<unknown, unknown>> = new Map();
   // Tracks the number of scope registration calls made by each processor
@@ -234,8 +234,8 @@ export class BalarExecution<MainIn, MainOut> {
   private forceFailCheckpoint(error: BalarStopError) {
     if (this.checkpointCache.size > 0) {
       for (const opName of this.checkpointCache.keys()) {
-        const bulkOp = this.checkpointCache.get(opName);
-        bulkOp?.call?.reject(error);
+        const batchOp = this.checkpointCache.get(opName);
+        batchOp?.call?.reject(error);
       }
       this.checkpointCache.clear();
     }
@@ -258,7 +258,7 @@ export class BalarExecution<MainIn, MainOut> {
       this.logger?.('executing checkpoint');
 
       for (const name of this.checkpointCache.keys()) {
-        this.executeCheckpointBulkOperation(name);
+        this.executeCheckpointBatchOperation(name);
       }
 
       // Prevent next balar fn calls in same stack frame to schedule redundant checkpoint
@@ -288,40 +288,40 @@ export class BalarExecution<MainIn, MainOut> {
     this.awaitingProcessors.clear();
   }
 
-  private executeCheckpointBulkOperation(opName: string) {
-    const bulkOp = this.checkpointCache.get(opName);
-    if (!bulkOp?.call) {
+  private executeCheckpointBatchOperation(opName: string) {
+    const batchOp = this.checkpointCache.get(opName);
+    if (!batchOp?.call) {
       return;
     }
 
     this.logger?.(
-      'executing underlying bulk operation',
+      'executing underlying batch operation',
       opName,
       'with args',
-      bulkOp.input,
-      ...bulkOp.extraArgs,
+      batchOp.input,
+      ...batchOp.extraArgs,
     );
 
-    const inputArray = [...bulkOp.input];
+    const inputArray = [...batchOp.input];
 
-    bulkOp
-      .fn(inputArray, ...bulkOp.extraArgs)
+    batchOp
+      .fn(inputArray, ...batchOp.extraArgs)
       .then((result) => {
         if (!Array.isArray(result)) {
-          bulkOp.call!.resolve(result);
+          batchOp.call!.resolve(result);
           return;
         }
 
-        if (result.length !== bulkOp.input.size) {
+        if (result.length !== batchOp.input.size) {
           throw new BalarError(
             'result array length does not match input array length for operation ' +
               opName,
           );
         }
 
-        bulkOp.call!.resolve(new Map(result.map((res, i) => [inputArray[i], res])));
+        batchOp.call!.resolve(new Map(result.map((res, i) => [inputArray[i], res])));
       })
-      .catch(bulkOp.call.reject);
+      .catch(batchOp.call.reject);
   }
 
   /**
@@ -406,7 +406,7 @@ export class BalarExecution<MainIn, MainOut> {
 
   registerCall(
     operationId: string,
-    fn: BulkFn<unknown, unknown, unknown[]>,
+    fn: BatchFn<unknown, unknown, unknown[]>,
     inputs: unknown[],
     extraArgs: unknown[],
   ) {
@@ -415,18 +415,18 @@ export class BalarExecution<MainIn, MainOut> {
       throw new BalarError('balar error: missing processor ID');
     }
 
-    const bulkOp = this.checkpointCache.get(operationId) ?? {
+    const batchOp = this.checkpointCache.get(operationId) ?? {
       fn,
       input: new Set(),
       extraArgs,
       call: null,
     };
-    this.checkpointCache.set(operationId, bulkOp);
+    this.checkpointCache.set(operationId, batchOp);
 
-    if (!bulkOp.call) {
-      bulkOp.call = this.initDeferredPromise();
+    if (!batchOp.call) {
+      batchOp.call = this.initDeferredPromise();
     }
-    inputs.forEach((input) => bulkOp.input.add(input));
+    inputs.forEach((input) => batchOp.input.add(input));
 
     this.awaitingProcessors.add(processorId);
     if (this.awaitingProcessors.size + this.doneProcessors === this.totalProcessors) {
@@ -434,6 +434,6 @@ export class BalarExecution<MainIn, MainOut> {
     }
 
     // Returns the whole result set => consumers should filter
-    return bulkOp.call!.cachedPromise!;
+    return batchOp.call!.cachedPromise!;
   }
 }

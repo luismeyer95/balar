@@ -1,6 +1,6 @@
 # Balar
 
-Describe a plan to process one item, let it automatically scale to handle more. Efficient bulk async processing made simpler for Typescript + Node.js.
+Describe a plan to process one item, let it automatically scale to handle more. Efficient batch async processing made simpler for Typescript + Node.js.
 
 ---
 
@@ -23,7 +23,7 @@ pnpm add balar          # pnpm
 import { balar } from 'balar';
 
 // Suppose we have a remote API for managing a greenhouse,
-// it exposes bulk operations to get or water plants
+// it exposes batch operations to get or water plants
 class GreenhouseService {
   async getPlants(plantIds: number[]): Promise<Plant[]> { ... }
   async waterPlants(plants: Plant[]): Promise<Date[]> { ... }
@@ -62,7 +62,7 @@ console.log(results);
 ### Core Features
 
 - **Automatic batching**: Write async logic to process a single item and let Balar scale it efficiently to handle more without increasing the number of outbound requests.
-- **Flexibility**: Put any asynchronous operation behind your bulk functions, be it API calls, database queries, etc.
+- **Flexibility**: Put any asynchronous operation behind your batch functions, be it API calls, database queries, etc.
 - **Transparency**: Plug the logger of your choice to debug or observe Balar executions.
 
 ### Runnable Demos
@@ -75,13 +75,13 @@ console.log(results);
 
 ## 🌀 Introduction
 
-When it comes to asynchronous bulk processing, Balar gives you the best of both worlds: the simplicity of single-item processing logic with the performance of bulk operations.
+When it comes to asynchronous batch processing, Balar gives you the best of both worlds: the simplicity of single-item processing logic with the performance of batch operations.
 
-Networking is often a bottleneck in modern web applications. Cloud technology has made it easy to scale up processing power, RAM, or storage, but each networking call still needs to negotiate a complicated and unreliable global network of computers, routers, switches, and protocols adding a lot of overhead. Therefore to minimize time spent in code that processes items in bulk, it's usually better to make fewer requests with more data as opposed to making more requests with less data.
+Networking is often a bottleneck in modern web applications. Cloud technology has made it easy to scale up processing power, RAM, or storage, but each networking call still needs to negotiate a complicated and unreliable global network of computers, routers, switches, and protocols adding a lot of overhead. Therefore to minimize time spent in code that processes items in batch, it's usually better to make fewer requests with more data as opposed to making more requests with less data.
 
 However, some simple logic to process one item can become quite complex when scaled to multiple items in a way that batches outbound requests to minimize network calls. You suddenly have to handle "diverging states" at each step of your processing (e.g. some items may pass a validation check, but others may not and should be filtered out for the next step). The core logic can easily get buried under batching concerns, reducing the expressiveness of your code.
 
-Balar allows you to write asynchronous bulk processing code that <em>looks</em> like it handles one item at a time in complete isolation, but without compromising on the efficiency of outbound asynchronous requests. Effectively, you describe how to handle one item, and Balar ensures that the underlying execution is as efficient as hand-written bulk processing code.
+Balar allows you to write asynchronous batch processing code that <em>looks</em> like it handles one item at a time in complete isolation, but without compromising on the efficiency of outbound asynchronous requests. Effectively, you describe how to handle one item, and Balar ensures that the underlying execution is as efficient as hand-written batch processing code.
 
 <summary><h2 style="display: inline-block;">Full Example</h2></summary>
 
@@ -121,7 +121,7 @@ async function updateBudgetWithValidation(
 
 Now let’s say your product offering evolved, and users can have multiple budgets to allocate to different services which they will want to update in real-time with low latency. Surely with these requirements, we don’t want to just run this code for each budget in sequence but instead batch reads and updates to minimize network latency.
 
-Alright, let’s create a bulk endpoint that can process a list of budget updates.
+Alright, let’s create a batch endpoint that can process a list of budget updates.
 
 ```ts
 type Budget = { id: number; amount: number };
@@ -180,7 +180,7 @@ async function updateBudgetsWithValidation(
 }
 ```
 
-Okay, this works but we definitely see how bulk processing can obscure a bit the original logic. What if you could have the efficiency of bulk processing and the simplicity of single-item (scalar) processing logic? Balar allows you to have both.
+Okay, this works but we definitely see how batch processing can obscure a bit the original logic. What if you could have the efficiency of batch processing and the simplicity of single-item (scalar) processing logic? Balar allows you to have both.
 
 ```ts
 import { balar } from 'balar';
@@ -237,7 +237,7 @@ Whenever any given execution of the processor function hits a call to a Balar-wr
 - Called a Balar-wrapped function themselves
 - Or returned from the processor function
 
-Once this happens, Balar executes all bulk operations that were buffered during this step using the inputs gathered from all executions. Results are then dispatched to the processor function executions which can continue to progress towards the next checkpoint. Rinse and repeat until all executions have returned their result.
+Once this happens, Balar executes all batch operations that were buffered during this step using the inputs gathered from all executions. Results are then dispatched to the processor function executions which can continue to progress towards the next checkpoint. Rinse and repeat until all executions have returned their result.
 
 See the budget update example annotated with checkpoint information below.
 
@@ -331,10 +331,10 @@ const [usersOk] = await balar.run([1, 2, 3], async (userId) => {
 
 ### `balar.wrap.fns()`
 
-Wraps standalone bulk functions into `balar`-compatible functions that can be called with either single inputs or arrays, automatically batching when inside `balar.run()`.
+Wraps standalone batch functions into `balar`-compatible functions that can be called with either single inputs or arrays, automatically batching when inside `balar.run()`.
 
 ```ts
-// Define your bulk functions
+// Define your batch functions
 async function getBooks(ids: number[]): Promise<Book[]> {
   const response = await api.post('/books/search', { ids });
   return response.data; // returns Book[]
@@ -361,7 +361,7 @@ const results = await balar.run(bookIds, async (bookId) => {
 
 ### `balar.wrap.object()`
 
-Wraps an object or class instance containing bulk methods, exposing only the compatible bulk methods + added overloads to support calling them with single inputs.
+Wraps an object or class instance containing batch methods, exposing only the compatible batch methods + added overloads to support calling them with single inputs.
 
 ```ts
 class UserRepository {
@@ -369,7 +369,7 @@ class UserRepository {
   async getPermissions(ids: number[]): Promise<Permission[][]> { ... }
   async updateUsers(users: User[]): Promise<boolean[]> { ... }
 
-  // Non-bulk method (won't be wrapped)
+  // Non-batch method (won't be wrapped)
   async healthCheck(): Promise<boolean> { ... }
 }
 

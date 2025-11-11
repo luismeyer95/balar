@@ -98,8 +98,8 @@ describe('tests', () => {
   });
 
   describe('configuration', () => {
-    describe('bulk fn types', () => {
-      test('bulk fn array output not same length as input should throw', async () => {
+    describe('batch fn types', () => {
+      test('batch fn array output not same length as input should throw', async () => {
         const double = jest.fn(async (_: number[]) => _.slice(0, _.length / 2));
         const registry = balar.wrap.fns({
           double,
@@ -114,7 +114,7 @@ describe('tests', () => {
         await expect(throwingCall()).rejects.toThrow(BalarError);
       });
 
-      test('fns - allow bulk fn with output array', async () => {
+      test('fns - allow batch fn with output array', async () => {
         const double = jest.fn(async (_: number[]) => _.map((x) => x * 2));
         const registry = balar.wrap.fns({
           double,
@@ -137,7 +137,7 @@ describe('tests', () => {
         expect(double).toHaveBeenCalledWith([1, 5, 3]);
       });
 
-      test('object - allow bulk fn with output array', async () => {
+      test('object - allow batch fn with output array', async () => {
         class Doubler {
           async double(_: number[]) {
             return _.map((x) => x * 2);
@@ -192,7 +192,7 @@ describe('tests', () => {
         });
 
         // Result is unexpectedly a 1-level deep array as the runtime resolved
-        // signature was bulk (can't easily disambiguate between scalar and bulk
+        // signature was batch (can't easily disambiguate between scalar and batch
         // calls for array types).
         expect(mock).toHaveBeenCalledWith([1, 2]);
       });
@@ -268,7 +268,7 @@ describe('tests', () => {
         }
 
         const registry = balar.wrap.object(new Derived());
-        // @ts-expect-error -- the bulk function input type is an array
+        // @ts-expect-error -- the batch function input type is an array
         registry.takesArrayInput;
 
         const [results] = await balar.run([1, 2], async function (arg) {
@@ -320,7 +320,7 @@ describe('tests', () => {
         );
 
         // Act
-        const [resultWithBulkApi] = await balar.run(
+        const [resultWithBatchApi] = await balar.run(
           [1, 2],
           async function getRemainingAmount(budgetId: number): Promise<number> {
             const currentBudget = (await registry.getCurrentBudgets([budgetId])).get(
@@ -334,9 +334,9 @@ describe('tests', () => {
           },
         );
 
-        expect(resultWithScalarApi).toEqual(resultWithBulkApi);
+        expect(resultWithScalarApi).toEqual(resultWithBatchApi);
         expectSuccessesToMatch(
-          resultWithBulkApi,
+          resultWithBatchApi,
           new Map([
             [1, 300],
             [2, 550],
@@ -347,7 +347,7 @@ describe('tests', () => {
   });
 
   describe('basic tests', () => {
-    test('executing wrapped function outside bulk exec should succeed', async () => {
+    test('executing wrapped function outside batch exec should succeed', async () => {
       const result = await registry.getCurrentBudgets(1);
 
       expect(result).toEqual(
@@ -399,7 +399,7 @@ describe('tests', () => {
       expect(result).toEqual([]);
     });
 
-    test('no output from bulk fn for given input', async () => {
+    test('no output from batch fn for given input', async () => {
       // Act
       const [result] = await balar.run([1, 2], async function (id: number): Promise<
         number | undefined
@@ -417,7 +417,7 @@ describe('tests', () => {
       );
     });
 
-    test('bulk fn called thrice', async () => {
+    test('batch fn called thrice', async () => {
       // Act
       const [result] = await balar.run([1, 2], async (id: number) => {
         await registry.noop(id);
@@ -453,7 +453,7 @@ describe('tests', () => {
       expect(spies.getCurrentBudgets).toHaveBeenCalledTimes(1);
     });
 
-    test('standard bulk workflow with sequential checkpoints (scalar api)', async () => {
+    test('standard batch workflow with sequential checkpoints (scalar api)', async () => {
       // Arrange
       budgetsRepo.failUpdateForBudget(4);
 
@@ -503,7 +503,7 @@ describe('tests', () => {
       expect(spies.updateBudgets).toHaveBeenCalledTimes(1);
     });
 
-    test('standard bulk workflow with sequential checkpoints (bulk api)', async () => {
+    test('standard batch workflow with sequential checkpoints (batch api)', async () => {
       // Arrange
       budgetsRepo.failUpdateForBudget(4);
 
@@ -566,14 +566,14 @@ describe('tests', () => {
       ]);
     });
 
-    test('bulk fn with extended arglist', async () => {
-      async function bulkMul(arr: number[], rhs: number) {
+    test('batch fn with extended arglist', async () => {
+      async function batchMul(arr: number[], rhs: number) {
         return new Map(arr.map((id) => [id, id * rhs]));
       }
 
-      const spyBulkMul = jest.fn(bulkMul);
+      const spyBatchMul = jest.fn(batchMul);
       const registry = balar.wrap.fns({
-        mul: spyBulkMul,
+        mul: spyBatchMul,
       });
 
       // Act
@@ -590,14 +590,14 @@ describe('tests', () => {
         [4, 8],
       ]);
       expectSuccessesToMatch(issues, expected);
-      expect(spyBulkMul).toHaveBeenCalledTimes(2);
-      expect(spyBulkMul).toHaveBeenCalledWith([1, 3], 3);
-      expect(spyBulkMul).toHaveBeenCalledWith([2, 4], 2);
+      expect(spyBatchMul).toHaveBeenCalledTimes(2);
+      expect(spyBatchMul).toHaveBeenCalledWith([1, 3], 3);
+      expect(spyBatchMul).toHaveBeenCalledWith([2, 4], 2);
     });
   });
 
-  describe('bulk api', () => {
-    test('results of processor bulk calls should only include their own data', async () => {
+  describe('batch api', () => {
+    test('results of processor batch calls should only include their own data', async () => {
       // Arrange
       budgetsRepo.spendOnBudget(1, 100);
       budgetsRepo.spendOnBudget(1, 100);
@@ -677,7 +677,7 @@ describe('tests', () => {
       expect(spies.getBudgetSpends).toHaveBeenCalledTimes(1);
     });
 
-    test('concurrent bulk execs using the same scalar fns should be isolated', async () => {
+    test('concurrent batch execs using the same scalar fns should be isolated', async () => {
       // Arrange
       async function processor(budgetId: number): Promise<number> {
         const currentBudget = await registry.getCurrentBudgets(budgetId);
@@ -777,7 +777,7 @@ describe('tests', () => {
   });
 
   describe('input/output mapping', () => {
-    test('should deduplicate equal inputs to bulk fn', async () => {
+    test('should deduplicate equal inputs to batch fn', async () => {
       // Act
       const requestIds = [1, 2, 3]; // all budgets are under the same account
       const [issues] = await balar.run(
@@ -832,7 +832,7 @@ describe('tests', () => {
       );
     });
 
-    test('should bubble up exception thrown inside bulk fn', async () => {
+    test('should bubble up exception thrown inside batch fn', async () => {
       const mayThrow = jest.fn(async (arr: number[]) => {
         return new Map(
           arr.map((id) => {
@@ -1194,19 +1194,19 @@ describe('tests', () => {
   });
 
   describe('extra arguments', () => {
-    async function bulkMul(arr: number[], rhs: number) {
+    async function batchMul(arr: number[], rhs: number) {
       return new Map(arr.map((id) => [id, id * rhs]));
     }
-    async function bulkMulObj(arr: number[], { rhs }: { rhs: number }) {
+    async function batchMulObj(arr: number[], { rhs }: { rhs: number }) {
       return new Map(arr.map((id) => [id, id * rhs]));
     }
-    async function bulkAdd3(arr: number[], two: number, three: number) {
+    async function batchAdd3(arr: number[], two: number, three: number) {
       return new Map(arr.map((id) => [id, id + two + three]));
     }
 
-    const gulkMul = jest.fn(bulkMul);
-    const gulkMulObj = jest.fn(bulkMulObj);
-    const gulkAdd3 = jest.fn(bulkAdd3);
+    const gulkMul = jest.fn(batchMul);
+    const gulkMulObj = jest.fn(batchMulObj);
+    const gulkAdd3 = jest.fn(batchAdd3);
 
     const registry = balar.wrap.fns({
       mul: gulkMul,
@@ -1218,7 +1218,7 @@ describe('tests', () => {
       jest.clearAllMocks();
     });
 
-    test('bulk fn with extended arglist', async () => {
+    test('batch fn with extended arglist', async () => {
       // Act
       const budgetIds = [1, 2, 3, 4];
       const [issues] = await balar.run(budgetIds, async (n) => {
@@ -1303,7 +1303,7 @@ describe('tests', () => {
         expectToHaveBeenCalledWithUnordered(spies.identity, [1, 2, 3, 4]);
       });
 
-      test('concurrent if + bulk fn', async () => {
+      test('concurrent if + batch fn', async () => {
         // Act
         const [result] = await balar.run([1, 2, 3, 4], async (n) => {
           const [tripled, same] = await Promise.all([
