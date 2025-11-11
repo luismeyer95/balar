@@ -311,25 +311,20 @@ class Repository {
 const repo = balar.wrap.object(new Repository());
 
 // Fetch users, their posts, and comments for each post
-const users = await balar.run([1, 2, 3], async (userId) => {
+const [usersOk] = await balar.run([1, 2, 3], async (userId) => {
   const user = await repo.getUsers(userId);
 
-  // Fetch for user's posts
-  const [postsWithComments] = await balar.run(user.postIds, async (postId) => {
+  const [postsOk] = await balar.run(user.postIds, async (postId) => {
     const post = await repo.getPosts(postId);
-
-    // Another nested run for post's comments
-    const [comments] = await balar.run(post.commentIds, async (commentId) => {
-      return repo.getComments(commentId);
-    });
+    const comments = await repo.getComments(post.commentIds);
 
     return { post, comments };
   });
 
-  return { user, posts: postsWithComments };
+  return { user, posts: postsOk.map(p => p.result) };
 });
 
-// Only 3 API calls total: 1 for users, 1 for all posts, 1 for all comments
+// Regardless of the input size, 3 API calls total: 1 for users, 1 for all posts, 1 for all comments
 ```
 
 ---
@@ -525,5 +520,5 @@ const results = await balar.run(customers, async (customer) => {
 
 ### How does it differ from GraphQL's DataLoader?
 
-DataLoader is a primary source of inspiration for Balar. It allows you to batch requests to the same source within the same event loop tick. Balar takes the same concept but with a different implementation, batching requests to the same source within the explicit scope you provide (e.g. across the executions of a processor function for a given set of inputs). This approach guarantees consistent batching behaviour even when executing workflows that include conditional data fetching or calls to "non-batch" async functions (see https://github.com/graphql/dataloader/issues/285). Balar also provides some utilities to simplify usage at scale within API development projects (object wrappers).
+DataLoader is a primary source of inspiration for `balar`. It allows you to batch requests to the same source within the same event loop tick. This library takes the same concept but with a different implementation, batching requests to the same source within the explicit scope you provide (e.g. across the executions of a processor function for a given set of inputs). With the addition of control flow operators, this approach guarantees consistent batching behaviour even when executing workflows that include conditional data fetching or calls to "non-batch" async functions (see https://github.com/graphql/dataloader/issues/285). `balar` also provides some utilities to facilitate and customize the batching behaviour (convenient proxy wrappers, concurrency control, error propagation strategies, etc).
 
