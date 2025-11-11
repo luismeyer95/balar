@@ -25,8 +25,8 @@ import { balar } from 'balar';
 // Suppose we have a remote API for managing a greenhouse,
 // it exposes bulk operations to get or water plants
 class GreenhouseService {
-  async getPlants(plantIds: number[]): Promise<Map<number, Plant>> { ... }
-  async waterPlants(plants: Plant[]): Promise<Map<Plant, Date>> { ... }
+  async getPlants(plantIds: number[]): Promise<Plant[]> { ... }
+  async waterPlants(plants: Plant[]): Promise<Date[]> { ... }
 }
 
 // Let's get these plants and water them while minimizing 
@@ -36,16 +36,16 @@ const plantIds = [1, 2, 3]; // 🌿 🌵 🌱
 const wrapper = balar.wrap.object(new GreenhouseService());
 
 const results = await balar.run(plantIds, async function waterPlant(plantId) {
-  // Balar collects all inputs given to `wrapper.getPlants(plantId)` 
+  // Balar collects all inputs given to `wrapper.getPlants(plantId)`
   // and invokes the real `getPlants([1, 2, 3])` exactly once under the hood
   const plant = await wrapper.getPlants(plantId);
 
   // ... Do other sync/async operations, return error, anything goes ...
 
   // Similarly, the real `waterPlants([plant, ...])` is called exactly once
-  const wateredAt = await wrapper.waterPlants(plant!);
+  const wateredAt = await wrapper.waterPlants(plant);
 
-  return { name: plant!.name, wateredAt };
+  return { name: plant.name, wateredAt };
 });
 
 // We described how to handle 1 plant, Balar scaled it to 3 plants efficiently
@@ -85,7 +85,7 @@ Balar allows you to write asynchronous bulk processing code that <em>looks</em> 
 
 <summary><h2 style="display: inline-block;">Full Example</h2></summary>
 
-Say you have an API endpoint to allow users to update the budget they can spend on your service. It has some validation checks like below. For the sake of simplicity, we use `string` for errors and `true` for success.
+Say you have an API endpoint to allow users to update the budget they can spend on your service. It has some validation checks like below.
 
 ```ts
 type Budget = { id: number; amount: number };
@@ -100,7 +100,7 @@ const repository = new BudgetsRepository();
 
 async function updateBudgetWithValidation(
   updateBudget: BudgetUpdateRequest,
-): Promise<string | true> {
+): Promise<string> {
   if (updateBudget.amount === 0) {
     return 'budget should be greater than 0';
   }
@@ -115,7 +115,7 @@ async function updateBudgetWithValidation(
     return 'budget update failed';
   }
 
-  return true;
+  return 'success!';
 }
 ```
 
@@ -129,18 +129,18 @@ type BudgetUpdateRequest = Budget;
 
 // Notice that we adapted the methods to handle multiple items at once
 class BudgetsRepository {
-  async getBudgets(id: number[]): Promise<Map<number, Budget>> { ... }
+  async getBudgets(id: number[]): Promise<Budget[]> { ... }
   async updateBudgets(
     requests: BudgetUpdateRequest[],
-  ): Promise<Map<BudgetUpdateRequest, boolean>> { ... }
+  ): Promise<boolean[]> { ... }
 }
 
 const repository = new BudgetsRepository();
 
 async function updateBudgetsWithValidation(
   requests: BudgetUpdateRequest[],
-): Promise<Map<Budget, string | true>> {
-  const resultByRequest = new Map<BudgetUpdateRequest, string | true>();
+): Promise<string[]> {
+  const resultByRequest = new Map<BudgetUpdateRequest, string>();
 
   const positiveBudgetUpdateRequests: BudgetUpdateRequest[] = [];
   for (const request of requests) {
@@ -168,10 +168,15 @@ async function updateBudgetsWithValidation(
   const updateResult = await repository.updateBudgets(validBudgetUpdateRequests);
 
   for (const [request, success] of updateResult) {
-    resultByRequest.set(request, success || 'budget update failed');
+    if (success) {
+      resultByRequest.set(request, 'success!');
+    } else {
+      resultByRequest.set(request, 'budget update failed');
+    }
   }
 
-  return resultByRequest;
+  const results = requests.map((req) => resultByRequest.get(req)!);
+  return results;
 }
 ```
 
@@ -183,30 +188,27 @@ import { balar } from 'balar';
 type Budget = { id: number; amount: number };
 type BudgetUpdateRequest = Budget;
 
-// Notice that we adapted the methods to handle multiple items at once
 class BudgetsRepository {
-  async getBudgets(id: number[]): Promise<Map<number, Budget>> { ... }
+  async getBudgets(id: number[]): Promise<Budget[]> { ... }
   async updateBudgets(
     requests: BudgetUpdateRequest[],
-  ): Promise<Map<BudgetUpdateRequest, boolean>> { ... }
+  ): Promise<boolean[]> { ... }
 }
 
-// The repository is wrapped in a Balar object. The Balar object only exposes the
-// methods that match the above "bulk signature", adding an overload for each of
-// the methods so they can also be called with a single item. Precisely, for every
-// `(i: I[]) => Map<I, O>` method in the object, a `(i: I) => O` overload is added.
+// The repository is now wrapped in a balar object. This object is a proxy 
+// to the original repository, enabling it for use with balar.
 const repository = balar.wrap.object(new BudgetsRepository());
 
 async function updateBudgetsWithValidation(
   requests: BudgetUpdateRequest[],
-): Promise<Map<BudgetUpdateRequest, string | true>> {
+): Promise<Result<BudgetUpdateRequest, string | true>> {
   return balar.run(requests, async (request) => {
     if (request.amount === 0) {
       return 'budget should be greater than 0';
     }
 
     const currentBudget = await repository.getBudgets(request.id);
-    if (request.amount < currentBudget!.amount) {
+    if (request.amount < currentBudget.amount) {
       return 'budget must not be lowered';
     }
 
@@ -215,14 +217,14 @@ async function updateBudgetsWithValidation(
       return 'budget update failed';
     }
 
-    return true;
+    return 'success!';
   });
 }
 ```
 
 This code is equivalent to the previous example doing manual batching. It may look like it runs 2 network calls per request, but it only runs 2 network calls in total regardless of the number of requests.
 
-Essentially, Balar provides a clean API to queue inputs to bulk functions of your choice and execute them in one batch. No manual batching, no managing parallel states; just clean, focused scalar logic with bulk efficiency!
+Essentially, Balar provides a clean API to queue inputs to batch functions of your choice and execute them in one go. No manual batching, no managing parallel states; just clean, focused single-item logic with batch efficiency!
 
 ## ⚙️ How it works
 
@@ -251,11 +253,11 @@ const requests = [
 
 const results = await balar.run(requests, async (request) => {
   if (request.amount === 0) {
-    return 'budget should be greater than 0';              // ]-- #2 returns 
+    return 'budget should be greater than 0';              // ]-- #2 returns
   }                                                        //              |
   const currentBudget = await repo.getBudgets(request.id); // ]-- getBudgets([1,3,4])
 
-  if (request.amount < currentBudget!.amount) {
+  if (request.amount < currentBudget.amount) {
     return 'budget must not be lowered';                   // ]-- #3 returns
   }                                                        //              |
   const success = await repo.updateBudgets(request);       // ]-- updateBudgets([1,4])
@@ -263,12 +265,12 @@ const results = await balar.run(requests, async (request) => {
   if (!success) {
     return 'budget update failed';                         // ]-- #4 returns
   }                                                        //              |
-  return true;                                             // ]-- #1 returns
+  return 'success!';                                       // ]-- #1 returns
 });
 
 expect(results).toEqual(
   new Map([
-    [{ id: 1, amount: 1000 }, true],
+    [{ id: 1, amount: 1000 }, 'success!'],
     [{ id: 2, amount: 0 }, 'budget should be greater than 0'],
     [{ id: 3, amount: 1 }, 'budget must not be lowered'],
     [{ id: 4, amount: 3000 }, 'budget update failed'],
@@ -277,10 +279,251 @@ expect(results).toEqual(
 
 ```
 
+## API overview
+
+### `balar.run()`
+
+The entrypoint function for your batch workflows. 
+Think of it as a variant of `Promise.all()` that automatically batches calls to the same source inside executions of the function you provide it.
+
+```ts
+const service = balar.wrap.object(new MyService());
+
+const results = await balar.run(
+  [1, 2, 3],
+  async (id) => {
+    const item = await service.getItems(id);  // batched
+    return service.processItems(item);        // batched
+  }
+);
+```
+
+**Nested execution:**
+You can call `balar.run()` inside another `balar.run()` to create nested execution contexts. This is particularly useful for hierarchical data structures where you would typically run into the [N+1 query problem](https://stackoverflow.com/a/97253).
+
+```ts
+class Repository {
+  async getUsers(ids: number[]): Promise<User[]> { ... }
+  async getPosts(ids: number[]): Promise<Post[]> { ... }
+  async getComments(ids: number[]): Promise<Comment[]> { ... }
+}
+
+const repo = balar.wrap.object(new Repository());
+
+// Fetch users, their posts, and comments for each post
+const users = await balar.run([1, 2, 3], async (userId) => {
+  const user = await repo.getUsers(userId);
+
+  // Fetch for user's posts
+  const [postsWithComments] = await balar.run(user.postIds, async (postId) => {
+    const post = await repo.getPosts(postId);
+
+    // Another nested run for post's comments
+    const [comments] = await balar.run(post.commentIds, async (commentId) => {
+      return repo.getComments(commentId);
+    });
+
+    return { post, comments };
+  });
+
+  return { user, posts: postsWithComments };
+});
+
+// Only 3 API calls total: 1 for users, 1 for all posts, 1 for all comments
+```
+
 ---
+
+### `balar.wrap.fns()`
+
+Wraps standalone bulk functions into `balar`-compatible functions that can be called with either single inputs or arrays, automatically batching when inside `balar.run()`.
+
+```ts
+// Define your bulk functions
+async function getBooks(ids: number[]): Promise<Book[]> {
+  const response = await api.post('/books/search', { ids });
+  return response.data; // returns Book[]
+}
+
+async function getAuthors(ids: number[]): Promise<Author[]> {
+  const response = await api.post('/authors/search', { ids });
+  return response.data; // returns Author[]
+}
+
+// Wrap them with balar
+const library = balar.wrap.fns({ getBooks, getAuthors });
+
+// Use them inside balar.run()
+const bookIds = [1, 2, 3];
+const results = await balar.run(bookIds, async (bookId) => {
+  const book = await library.getBooks(bookId);     // single call, returns Book
+  const author = await library.getAuthors(book.authorId);
+  return { book, author };
+});
+```
+
+---
+
+### `balar.wrap.object()`
+
+Wraps an object or class instance containing bulk methods, exposing only the compatible bulk methods + added overloads to support calling them with single inputs.
+
+```ts
+class UserRepository {
+  async getUsers(ids: number[]): Promise<User[]> { ... }
+  async getPermissions(ids: number[]): Promise<Permission[][]> { ... }
+  async updateUsers(users: User[]): Promise<boolean[]> { ... }
+
+  // Non-bulk method (won't be wrapped)
+  async healthCheck(): Promise<boolean> { ... }
+}
+
+// Wrap the entire repository
+const repo = balar.wrap.object(new UserRepository());
+
+// Only wrap specific methods
+const readOnlyRepo = balar.wrap.object(new UserRepository(), {
+  pick: ['getUsers', 'getPermissions']
+});
+
+// Wrap all except specific methods
+const safeRepo = balar.wrap.object(new UserRepository(), {
+  exclude: ['updateUsers']
+});
+
+// Use inside balar.run()
+const userIds = [1, 2, 3, 4];
+const results = await balar.run(userIds, async (userId) => {
+  const [user, perms] = await Promise.all([
+    repo.getUsers(userId),       // batched
+    repo.getPermissions(userId)  // batched
+  ]);
+
+  return { user, perms };
+});
+```
+
+---
+
+### Control flow operators (`balar.if()`, `balar.switch()`)
+
+In order to enable efficient batching in more complex workflows, `balar` needs hints to understand how your processing logic partitions the input dataset. This is done by using 
+special control flow operators: `balar.if()` and `balar.switch()`.
+
+**When to use:** when your batch items have different processing logic that lead to different data-fetching requirements. If you find yourself conditionally calling a wrapped batch function, you should be using `balar.if()`/`balar.switch()` instead to ensure efficient batching.
+
+---
+
+#### `balar.if()`
+
+```ts
+class ShippingService {
+  async getDomesticRates(ids: number[]): Promise<Rate[]> { ... }
+  async getInternationalRates(ids: number[]): Promise<Rate[]> { ... }
+}
+
+const shipping = balar.wrap.object(new ShippingService());
+
+type Order = { id: number; country: string; };
+const orders: Order[] = [
+  { id: 1, country: 'FR' },
+  { id: 2, country: 'UK' },
+  { id: 3, country: 'FR' },
+  { id: 4, country: 'JP' },
+];
+
+const results = await balar.run(orders, async (order) => {
+  const isDomestic = order.country === 'FR';
+
+  // Automatically partitions domestic vs international orders
+  const rate = await balar.if(
+    isDomestic,
+    () => shipping.getDomesticRates(order.id),      // batched: orders 1, 3
+    () => shipping.getInternationalRates(order.id)  // batched: orders 2, 4
+  );
+
+  return { order, rate, isDomestic };
+});
+
+// Total API calls: 2 (1 domestic + 1 international)
+```
+
+---
+
+#### `balar.switch()` (value-based)
+
+```ts
+class PaymentService {
+  async processCreditCard(ids: number[]): Promise<Receipt[]> { ... }
+  async processPayPal(ids: number[]): Promise<Receipt[]> { ... }
+  async processBankTransfer(ids: number[]): Promise<Receipt[]> { ... }
+}
+
+const payments = balar.wrap.object(new PaymentService());
+
+type Payment = { id: number; method: 'card' | 'paypal' | 'bank'; amount: number };
+const paymentQueue: Payment[] = [
+  { id: 1, method: 'card', amount: 100 },
+  { id: 2, method: 'paypal', amount: 50 },
+  { id: 3, method: 'card', amount: 200 },
+  { id: 4, method: 'bank', amount: 1000 },
+];
+
+const results = await balar.run(paymentQueue, async (payment) => {
+  // Route to the appropriate payment processor
+  const receipt = await balar.switch(payment.method, [
+    ['card', () => payments.processCreditCard(payment.id)],
+    ['paypal', () => payments.processPayPal(payment.id)],
+    ['bank', () => payments.processBankTransfer(payment.id)],
+  ]);
+
+  return { payment, receipt };
+});
+
+// Payments automatically grouped by method and batched
+// Total API calls: 3 (one per payment method)
+```
+
+---
+
+#### `balar.switch()` (first-match)
+
+```ts
+class DiscountService {
+  async getNoDiscount(ids: number[]): Promise<number[]> { ... }
+  async getStandardDiscount(ids: number[]): Promise<number[]> { ... }
+  async getPremiumDiscount(ids: number[]): Promise<number[]> { ... }
+  async getVIPDiscount(ids: number[]): Promise<number[]> { ... }
+}
+
+const discounts = balar.wrap.object(new DiscountService());
+
+type Customer = { id: number; totalSpent: number };
+const customers: Customer[] = [
+  { id: 1, totalSpent: 50 },
+  { id: 2, totalSpent: 500 },
+  { id: 3, totalSpent: 5000 },
+  { id: 4, totalSpent: 50000 },
+];
+
+const results = await balar.run(customers, async (customer) => {
+  // Route based on spending tiers
+  const discount = await balar.switch(
+    [customer.totalSpent < 100, () => discounts.getNoDiscount(customer.id)],
+    [customer.totalSpent < 1000, () => discounts.getStandardDiscount(customer.id)],
+    [customer.totalSpent < 10000, () => discounts.getPremiumDiscount(customer.id)],
+    () => discounts.getVIPDiscount(customer.id) // default for totalSpent >= 10000
+  );
+
+  return { customer, discount };
+});
+
+// Customers automatically grouped by tier and batched
+```
 
 ## ❓ FAQ
 
 ### How does it differ from GraphQL's DataLoader?
 
 DataLoader is a primary source of inspiration for Balar. It allows you to batch requests to the same source within the same event loop tick. Balar takes the same concept but with a different implementation, batching requests to the same source within the explicit scope you provide (e.g. across the executions of a processor function for a given set of inputs). This approach guarantees consistent batching behaviour even when executing workflows that include conditional data fetching or calls to "non-batch" async functions (see https://github.com/graphql/dataloader/issues/285). Balar also provides some utilities to simplify usage at scale within API development projects (object wrappers).
+
