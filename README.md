@@ -1,13 +1,13 @@
 # `balar`
 
-A TypeScript/Node.js library to allow developers to build network-efficient batch processing APIs with simpler code. Write logic that processes 1 item, and let `balar` scale it to handle more efficiently.
+A TypeScript/Node.js library that allows developers to build network-efficient batch processing APIs with simpler code. Write logic that processes 1 item, and let `balar` scale it to handle more without multiplying the number of outbound requests.
 
 ---
 
 ## Installation
 
 ```bash
-npm install balar       # npm
+npm install balar
 ```
 
 ---
@@ -18,7 +18,7 @@ npm install balar       # npm
 ```ts
 import { balar } from 'balar';
 
-// suppose we have an API for updating user budgets with validation rules
+// suppose we have an API for updating budgets with validation rules
 type Budget = { id: number; amount: number };
 
 class BudgetsRepository {
@@ -77,7 +77,7 @@ console.log(successes);
 
 - **Automatic batching**: Write async logic to process a single item and let `balar` scale it efficiently to handle more without increasing the number of outbound requests.
 - **Flexibility**: Put any asynchronous operation behind your batch functions, be it API calls, database queries, etc.
-- **Transparency**: Plug the logger of your choice to debug or observe Balar executions.
+- **Transparency**: Plug the logger of your choice to debug or observe `balar` executions.
 
 
 ---
@@ -131,7 +131,7 @@ async function updateBudgetWithValidation(
 
 Now let’s say your product offering evolved, and users can have multiple budgets to allocate to different services which they will want to update in real-time with low latency. Surely with these requirements, we don’t want to just run this code for each budget in sequence but instead batch reads and updates to minimize network latency.
 
-Alright, let’s create a batch endpoint that can process a list of budget updates.
+Let’s create a batch endpoint that can process a list of budget updates.
 
 ```ts
 type Budget = { id: number; amount: number };
@@ -190,7 +190,7 @@ async function updateBudgetsWithValidation(
 }
 ```
 
-Okay, this works but we definitely see how batch processing can obscure a bit the original logic. What if you could have the efficiency of batch processing and the simplicity of single-item (scalar) processing logic? `balar` allows you to have both.
+This works but we definitely see how batch processing can obscure the original logic. What if you could have the efficiency of batch processing and the simplicity of single-item (scalar) processing logic? `balar` allows you to have both.
 
 ```ts
 import { balar } from 'balar';
@@ -240,12 +240,12 @@ Essentially, `balar` provides a clean API to queue inputs to batch functions of 
 
 In short, the processor function is executed concurrently for all inputs, but all executions "join" at synchronization checkpoints (balar-wrapped function call sites) to allow the aggregation of inputs into batches before execution. Internally, the context tracking and synchronization is done by leveraging `AsyncLocalStorage` and deferred promises. 
 
-When you call `balar.run(inputs, inputProcessorFn)`, the processor function is called for each input immediately. `balar` then tracks and controls the progress of each call. The concurrent execution of these calls is divided into steps, each new step being the result of a “synchronization event”.
+When you call `balar.run(inputs, inputProcessorFn)`, the processor function is called for each input immediately. `balar` then tracks and controls the progress of each call. The concurrent execution of these calls is divided into steps, with balar-wrapped function calls acting as boundaries between them.
 
-Whenever any given execution of the processor function hits a call to a balar-wrapped function, the provided input(s) are stored internally and the execution is put on hold until a "sync event" happens. The sync event happens once all the other executions have either:
-
+Whenever any given execution of the processor function hits a call to a balar-wrapped function, the provided input(s) are stored internally and the execution is put on hold. The actual batch function call happens once all the other executions have either:
 - Called a balar-wrapped function themselves
-- Or returned from the processor function
+- Returned from the processor function
+- Thrown an error
 
 Once this happens, `balar` executes all batch operations that were buffered during this step using the inputs gathered from all executions. Results are then dispatched to the processor function executions which can continue to progress towards the next checkpoint. Rinse and repeat until all executions have returned their result.
 
@@ -261,7 +261,7 @@ const requests = [
 
 // Total number of checkpoints: 3
 
-const results = await balar.run(requests, async (request) => {
+const [successes] = await balar.run(requests, async (request) => {
   if (request.amount === 0) {
     return 'budget should be greater than 0';              // ]-- #2 returns
   }                                                        //              |
@@ -278,14 +278,12 @@ const results = await balar.run(requests, async (request) => {
   return 'success!';                                       // ]-- #1 returns
 });
 
-expect(results).toEqual(
-  new Map([
-    [{ id: 1, amount: 1000 }, 'success!'],
-    [{ id: 2, amount: 0 }, 'budget should be greater than 0'],
-    [{ id: 3, amount: 1 }, 'budget must not be lowered'],
-    [{ id: 4, amount: 3000 }, 'budget update failed'],
-  ])
-)
+// Output:
+
+// [1, 'success!']
+// [2, 'budget should be greater than 0']
+// [3, 'budget must not be lowered']
+// [4, 'budget update failed']
 
 ```
 
@@ -412,10 +410,12 @@ const results = await balar.run(userIds, async (userId) => {
 
 ### Control flow operators (`balar.if()`, `balar.switch()`)
 
-In order to enable efficient batching in more complex workflows, `balar` needs hints to understand how your processing logic partitions the input dataset. This is done by using 
+In order to enable better batching behavior in more complex workflows, `balar` needs hints to understand how your processing logic partitions the input dataset. This is done by using 
 special control flow operators: `balar.if()` and `balar.switch()`.
 
-**When to use:** when your batch items have different processing logic that lead to different data-fetching requirements. If you find yourself conditionally calling a wrapped batch function, you should be using `balar.if()`/`balar.switch()` instead to ensure efficient batching.
+> ⓘ  Using these is **optional**. Without control flow operators, batch items that go down the same logic paths will always have their calls batched together. Control flow operators allow `balar` to see **more** opportunities to consolidate batches (e.g. when two executions take different logic branches but rejoin at a later point)
+
+**When to use:** when your batch items have different processing logic that lead to different data-fetching requirements, and there is a strong need to minimize the number of network calls (maximizing batch size)
 
 ---
 
