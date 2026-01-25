@@ -17,4 +17,34 @@ jobs:
     - name: Install dependencies
       run: npm ci
     - name: Run tests
-      run: npm test
+      run: npm test -- --json --outputFile=test-results.json
+    - name: Extract test results
+      if: always()
+      id: test-results
+      run: |
+        if [ -f test-results.json ]; then
+          TOTAL=$(jq -r '.numTotalTests' test-results.json)
+          PASSED=$(jq -r '.numPassedTests' test-results.json)
+          FAILED=$(jq -r '.numFailedTests' test-results.json)
+          echo "total=$TOTAL" >> $GITHUB_OUTPUT
+          echo "passed=$PASSED" >> $GITHUB_OUTPUT
+          echo "failed=$FAILED" >> $GITHUB_OUTPUT
+
+          if [ "$FAILED" -eq 0 ]; then
+            echo "message=$PASSED/$TOTAL tests passed" >> $GITHUB_OUTPUT
+            echo "color=brightgreen" >> $GITHUB_OUTPUT
+          else
+            echo "message=$PASSED/$TOTAL tests passed" >> $GITHUB_OUTPUT
+            echo "color=red" >> $GITHUB_OUTPUT
+          fi
+        fi
+    - name: Create test badge
+      if: github.ref == 'refs/heads/master'
+      uses: schneegans/dynamic-badges-action@v1.7.0
+      with:
+        auth: ${{ secrets.GIST_SECRET }}
+        gistID: ${{ secrets.GIST_ID }}
+        filename: balar.json
+        label: tests
+        message: ${{ steps.test-results.outputs.message }}
+        color: ${{ steps.test-results.outputs.color }}
