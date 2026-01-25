@@ -1,6 +1,7 @@
 # `balar`
 
 ![Tests](https://img.shields.io/endpoint?url=https://gist.githubusercontent.com/luismeyer95/f53bbd1f6bf5d5d0a7469dda9b493095/raw/balar.json)
+ ![Code](https://img.shields.io/badge/code-100%25%20artisanal%2C%20made%20in%20🇫🇷%20with%20❤-0055A4)
 
 A TypeScript/Node.js library that allows developers to build network-efficient batch processing APIs with simpler code. Write logic that processes 1 item, and let `balar` scale it to handle more without multiplying the number of outbound requests.
 
@@ -15,7 +16,7 @@ npm install balar
 ---
 
 
-## ⚡ Quick start
+## Quick start
 
 ```ts
 import { balar } from 'balar';
@@ -85,7 +86,7 @@ console.log(successes);
 ---
 
 
-## 🌀 Introduction
+## Introduction
 
 When it comes to asynchronous batch processing, `balar` gives you the best of both worlds: the simplicity of single-item processing logic with the performance of batch operations.
 
@@ -93,7 +94,7 @@ Networking is often a bottleneck in modern web applications. Cloud technology ha
 
 However, some simple logic to process one item can become quite complex when scaled to multiple items in a way that batches outbound requests to minimize network calls. You suddenly have to handle "diverging states" at each step of your processing (e.g. some items may pass a validation check, but others may not and should be filtered out for the next step). The core logic can easily get buried under batching concerns, reducing the expressiveness of your code.
 
-`balar` allows you to write asynchronous batch processing code that <em>looks</em> like it handles one item at a time in complete isolation, but without compromising on the efficiency of outbound asynchronous requests. Effectively, you describe how to handle one item, and `balar` ensures that the underlying execution is as efficient as hand-written batch processing code.
+`balar` allows you to write asynchronous batch processing code that <em>looks</em> like it handles one item at a time in complete isolation, but without compromising on the efficiency of outbound asynchronous requests. Effectively, you describe how to handle one item, and `balar` ensures that the underlying execution is as network-efficient as hand-written batch processing code.
 
 <summary><h2 style="display: inline-block;">Full Example</h2></summary>
 
@@ -238,9 +239,10 @@ This code is equivalent to the previous example doing manual batching. It may lo
 
 Essentially, `balar` provides a clean API to queue inputs to batch functions of your choice and execute them in one go. No manual batching, no managing parallel states; just clean, focused single-item logic with batch efficiency!
 
-## ⚙️ How it works
+<details>
+<summary><h2 style="display: inline-block;">⚙️ How it works</h2></summary>
 
-In short, the processor function is executed concurrently for all inputs, but all executions "join" at synchronization checkpoints (balar-wrapped function call sites) to allow the aggregation of inputs into batches before execution. Internally, the context tracking and synchronization is done by leveraging `AsyncLocalStorage` and deferred promises. 
+In short, the processor function is executed concurrently for all inputs, but all executions "join" at synchronization checkpoints (balar-wrapped function call sites) to allow the aggregation of inputs into batches before execution. Internally, the context tracking and synchronization is done by leveraging `AsyncLocalStorage` and deferred promises.
 
 When you call `balar.run(inputs, inputProcessorFn)`, the processor function is called for each input immediately. `balar` then tracks and controls the progress of each call. The concurrent execution of these calls is divided into steps, with balar-wrapped function calls acting as boundaries between them.
 
@@ -253,7 +255,7 @@ Once this happens, `balar` executes all batch operations that were buffered duri
 
 See the budget update example annotated with checkpoint information below.
 
-```ts 
+```ts
 const requests = [
   { id: 1, amount: 1000 }, // success (from 500 to 1000)
   { id: 2, amount: 0 },    // fail: can't have 0
@@ -289,6 +291,8 @@ const [successes] = await balar.run(requests, async (request) => {
 
 ```
 
+</details>
+
 ## API overview
 
 ### `balar.run()`
@@ -308,7 +312,59 @@ const results = await balar.run(
 );
 ```
 
-**Nested execution:**
+**Error handling**
+
+`balar.run()` returns a tuple: 
+- the first element contains all successful execution results
+- the second contains all errors
+
+```ts
+const [successes, errors] = await balar.run(inputs, processor);
+
+// successes: Array<{ input: In, result: Out }>
+// errors: Array<{ input: In, err: unknown }>
+```
+
+When a processor throws an error, that specific processor stops execution. Other processors continue unaffected. The error is collected in the `errors` array.
+
+```ts
+const [successes, errors] = await balar.run([1, 2, 3, 4], async (id) => {
+  if (id % 2 === 0) {
+    throw new Error('even numbers not allowed');
+  }
+  return service.processItem(id);
+});
+
+// successes: [{ input: 1, result: ... }, { input: 3, result: ... }]
+// errors: [{ input: 2, err: Error(...) }, { input: 4, err: Error(...) }]
+```
+
+> ⓘ  If an error is thrown inside a balar-wrapped batch function, all processors that depend on that batch call will fail with that error. Processors that don't depend on the failed batch call continue normally.
+
+**Critical errors**
+
+To stop all processors when a critical error occurs, throw a `BalarStopError`. This will force-fail all processors, prevent the execution of the next batch function and settle the returned promise as soon as possible.
+
+```ts
+import { balar, BalarStopError } from 'balar';
+
+const [successes, errors] = await balar.run(requests, async (request) => {
+  const isValid = await service.validateRequest(request);
+
+  if (!isValid && request.critical) {
+    // stop everything, this is a critical failure
+    throw new BalarStopError('Critical validation failure');
+  }
+
+  return await service.processRequest(request);
+});
+
+// successes: []
+// errors: [{ input: req1, err: BalarStopError(...) }, { input: req2, err: BalarStopError(...) }, ...]
+```
+
+**Nested execution**
+
 You can call `balar.run()` inside another `balar.run()` to create nested execution contexts. This is particularly useful for hierarchical data structures where you would typically run into the [N+1 query problem](https://stackoverflow.com/a/97253).
 
 ```ts
@@ -320,7 +376,7 @@ class Repository {
 
 const repo = balar.wrap.object(new Repository());
 
-// Fetch users, their posts, and comments for each post
+// fetch users, their posts, and comments for each post
 const [usersOk] = await balar.run([1, 2, 3], async (userId) => {
   const user = await repo.getUsers(userId);
 
@@ -334,7 +390,7 @@ const [usersOk] = await balar.run([1, 2, 3], async (userId) => {
   return { user, posts: postsOk.map(p => p.result) };
 });
 
-// Regardless of the input size, 3 API calls total: 1 for users, 1 for all posts, 1 for all comments
+// regardless of the input size, 3 API calls total: 1 for users, 1 for all posts, 1 for all comments
 ```
 
 ---
@@ -344,7 +400,7 @@ const [usersOk] = await balar.run([1, 2, 3], async (userId) => {
 Wraps standalone batch functions into `balar`-compatible functions that can be called with either single inputs or arrays, automatically batching when inside `balar.run()`.
 
 ```ts
-// Define your batch functions
+// define your batch functions
 async function getBooks(ids: number[]): Promise<Book[]> {
   const response = await api.post('/books/search', { ids });
   return response.data; // returns Book[]
@@ -355,14 +411,14 @@ async function getAuthors(ids: number[]): Promise<Author[]> {
   return response.data; // returns Author[]
 }
 
-// Wrap them with balar
+// wrap them with balar
 const library = balar.wrap.fns({ getBooks, getAuthors });
 
-// Use them inside balar.run()
+// use them inside balar.run()
 const bookIds = [1, 2, 3];
 const results = await balar.run(bookIds, async (bookId) => {
-  const book = await library.getBooks(bookId);     // single call, returns Book
-  const author = await library.getAuthors(book.authorId);
+  const book = await library.getBooks(bookId); // batched
+  const author = await library.getAuthors(book.authorId); // batched
   return { book, author };
 });
 ```
@@ -379,24 +435,24 @@ class UserRepository {
   async getPermissions(ids: number[]): Promise<Permission[][]> { ... }
   async updateUsers(users: User[]): Promise<boolean[]> { ... }
 
-  // Non-batch method (won't be wrapped)
+  // non-batch method (won't be available on the wrapper)
   async healthCheck(): Promise<boolean> { ... }
 }
 
-// Wrap the entire repository
+// wrap the entire repository
 const repo = balar.wrap.object(new UserRepository());
 
-// Only wrap specific methods
+// only expose specific methods
 const readOnlyRepo = balar.wrap.object(new UserRepository(), {
   pick: ['getUsers', 'getPermissions']
 });
 
-// Wrap all except specific methods
+// expose all except specific methods
 const safeRepo = balar.wrap.object(new UserRepository(), {
   exclude: ['updateUsers']
 });
 
-// Use inside balar.run()
+// use inside balar.run()
 const userIds = [1, 2, 3, 4];
 const results = await balar.run(userIds, async (userId) => {
   const [user, perms] = await Promise.all([
@@ -412,12 +468,12 @@ const results = await balar.run(userIds, async (userId) => {
 
 ### Control flow operators (`balar.if()`, `balar.switch()`)
 
-In order to enable better batching behavior in more complex workflows, `balar` needs hints to understand how your processing logic partitions the input dataset. This is done by using 
+In order to enable improved batching behavior in more complex workflows, `balar` needs hints to understand how your processing logic partitions the input dataset. This is done by using 
 special control flow operators: `balar.if()` and `balar.switch()`.
 
-> ⓘ  Using these is **optional**. Without control flow operators, batch items that go down the same logic paths will always have their calls batched together. Control flow operators allow `balar` to see **more** opportunities to consolidate batches (e.g. when two executions take different logic branches but rejoin at a later point)
+> ⓘ  Using these is **optional**. Without control flow operators, batch items that go down the same logic paths will always have their calls batched together. Control flow operators allow `balar` to see **more** opportunities to consolidate batches (e.g. when two executions take diverging paths leading to different sequences of batch calls, but "rejoin" at a later point) and more opportunities to parallelize workflows across branches. 
 
-**When to use:** when your batch items have different processing logic that lead to different data-fetching requirements, and there is a strong need to minimize the number of network calls (maximizing batch size)
+Use these when your batch items have different processing logic that lead to different data-fetching requirements, and there is a strong need to minimize the number of network calls (maximizing batch size)
 
 ---
 
@@ -442,7 +498,7 @@ const orders: Order[] = [
 const results = await balar.run(orders, async (order) => {
   const isDomestic = order.country === 'FR';
 
-  // Automatically partitions domestic vs international orders
+  // automatically partitions domestic vs international orders
   const rate = await balar.if(
     isDomestic,
     () => shipping.getDomesticRates(order.id),      // batched: orders 1, 3
@@ -452,7 +508,7 @@ const results = await balar.run(orders, async (order) => {
   return { order, rate, isDomestic };
 });
 
-// Total API calls: 2 (1 domestic + 1 international)
+// total API calls: 2 (1 domestic + 1 international)
 ```
 
 ---
@@ -477,7 +533,7 @@ const paymentQueue: Payment[] = [
 ];
 
 const results = await balar.run(paymentQueue, async (payment) => {
-  // Route to the appropriate payment processor
+  // route to the appropriate payment processor
   const receipt = await balar.switch(payment.method, [
     ['card', () => payments.processCreditCard(payment.id)],
     ['paypal', () => payments.processPayPal(payment.id)],
@@ -487,8 +543,8 @@ const results = await balar.run(paymentQueue, async (payment) => {
   return { payment, receipt };
 });
 
-// Payments automatically grouped by method and batched
-// Total API calls: 3 (one per payment method)
+// payments automatically grouped by method and batched
+// total API calls: 3 (one per payment method)
 ```
 
 ---
@@ -514,7 +570,7 @@ const customers: Customer[] = [
 ];
 
 const results = await balar.run(customers, async (customer) => {
-  // Route based on spending tiers
+  // route based on spending tiers
   const discount = await balar.switch(
     [customer.totalSpent < 100, () => discounts.getNoDiscount(customer.id)],
     [customer.totalSpent < 1000, () => discounts.getStandardDiscount(customer.id)],
@@ -525,7 +581,7 @@ const results = await balar.run(customers, async (customer) => {
   return { customer, discount };
 });
 
-// Customers automatically grouped by tier and batched
+// customers automatically grouped by tier and batched
 ```
 
 ## ❓ FAQ

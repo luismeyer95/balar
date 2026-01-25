@@ -21,47 +21,66 @@ import { chunk } from './utils';
  * @param inputs - The array of inputs to process.
  * @param processor - An asynchronous function that processes each individual input.
  * @param opts - Optional execution options (e.g., concurrency control, logger).
- * @returns A `Promise` resolving to a `Map` that associates each input request with its corresponding output.
+ * @returns - A tuple of [successes, errors], containing the results for each input.
  *
  * @example
  *
  * ```ts
- * import { balar } from 'balar';
- *
- * // Suppose we have a remote API for managing a greenhouse that we interact with
- * // through this service
- * class GreenhouseService {
- *   async getPlants(plantIds: number[]): Promise<Map<number, Plant>> { ... }
- *   async waterPlants(plants: Plant[]): Promise<Map<Plant, Date>> { ... }
- * }
- *
- * // Wrap the service object with Balar
- * const wrapper = balar.wrap.object(new GreenhouseService());
- *
- * // You can also wrap standalone functions like this
- * // const wrapper = balar.wrap.fns({ getPlants, waterPlants });
- *
- * // Let's water multiple plants at once
- * const plantIds = [1, 2, 3]; // 🌿 🌵 🌱
- *
- * // This code reads like plants are being watered in sequence, but...
- * const results = await balar.run(plantIds, async function waterPlant(plantId) {
- *   // Balar queues all calls to `wrapper.getPlants(plantId)` and invokes
- *   // the real `getPlants([1, 2, 3])` exactly once under the hood
- *   const plant = await wrapper.getPlants(plantId);
- *
- *   // ... Do other sync/async operations, return error, anything goes ...
- *
- *   // Similarly, the real `waterPlants([plant, ...])` is called exactly once
- *   const wateredAt = await wrapper.waterPlants(plant!);
- *
- *   return { name: plant!.name, wateredAt };
- * });
- *
- * // Total number of requests to our remote API: 2! ✔️
- *
- * // Map { 1 => { name: "Fern", wateredAt: ... }, 2 => { name: "Cactus", wateredAt: ... }, ... }
- * console.log(results);
+  import { balar } from 'balar';
+
+  // suppose we have an API for updating budgets with validation rules
+  type Budget = { id: number; amount: number };
+
+  class BudgetsRepository {
+    async getBudgets(ids: number[]): Promise<Budget[]> { ... }
+    async updateBudgets(budgets: Budget[]): Promise<boolean[]> { ... }
+  }
+
+  const repo = balar.wrap.object(new BudgetsRepository());
+
+  // we have a list of budget updates to process
+  const requests = [
+    { id: 1, amount: 1000 }, // success
+    { id: 2, amount: 0 },    // should fail: can't be 0
+    { id: 3, amount: 1 },    // should fail: can't decrease the budget
+  ];
+
+  const [successes] = await balar.run(requests, async (request) => {
+    if (request.amount === 0) {
+      return 'budget should be greater than 0';
+    }
+
+    // balar collects all `request.id`s and executes 
+    // `getBudgets([1, 2, 3])` exactly once
+    const currentBudget = await repo.getBudgets(request.id);
+
+    if (request.amount < currentBudget.amount) {
+      return 'budget must not be lowered';
+    }
+
+    // similarly, `updateBudgets([...])` is called exactly once
+    // regardless of the number of requests
+    const success = await repo.updateBudgets(request);
+
+    if (!success) {
+      return 'budget update failed';
+    }
+
+    return 'success!';
+  });
+
+  // we describe how to handle 1 update, balar takes care of 
+  // scaling it to multiple updates without increasing the number
+  // of outbound requests to our API
+
+  // total API calls: 2 ✨ (1 getBudgets + 1 updateBudgets) 
+
+  console.log(successes);
+  // [
+  //   { input: { id: 1, amount: 1000 }, result: 'success!' },
+  //   { input: { id: 2, amount: 0 }, result: 'budget should be greater than 0' },
+  //   { input: { id: 3, amount: 1 }, result: 'budget must not be lowered' }
+  // ]
  * ```
  */
 export async function run<In, Out>(

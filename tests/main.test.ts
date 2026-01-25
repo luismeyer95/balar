@@ -33,6 +33,12 @@ describe('tests', () => {
     lt: jest.fn(async (_: number[], _2: number) => new Map(_.map((x) => [x, x < _2]))),
     gt: jest.fn(async (_: number[], _2: number) => new Map(_.map((x) => [x, x > _2]))),
     arrayVariant: jest.fn(async (_: number[]) => _),
+    throwsOnEven: jest.fn(async (_: number[]) => {
+      if (_.find((x) => x % 2 === 0)) {
+        throw new Error('oops');
+      }
+      return new Map(_.map((x) => [x, x]));
+    }),
   };
 
   let registry = createDefaultRegistry();
@@ -52,6 +58,7 @@ describe('tests', () => {
       inspect: spies.inspect as any as <T>(args: T[]) => Promise<Map<T, void>>,
       // @ts-expect-error
       inspectBad: spies.inspect as (args: any[]) => Promise<Map<any, void>>,
+      throwsOnEven: spies.throwsOnEven,
 
       // Budget domain using fakes
       getAccountsById: spies.getAccountsById as typeof accountsRepo.getAccountsById,
@@ -875,7 +882,7 @@ describe('tests', () => {
       );
     });
 
-    test('throwing regular error in 1 processor should not disrupt others', async () => {
+    test('throwing error in 1 processor should not disrupt others', async () => {
       // Act
       const [successes, errors] = await balar.run(
         [1, 2, 3, 4],
@@ -901,6 +908,31 @@ describe('tests', () => {
         new Map([
           [1, 1],
           [3, 3],
+        ]),
+      );
+    });
+
+    test('throwing error in 1 batch fn should only disrupt calling processors', async () => {
+      // Arrange
+      // Act
+      const [successes, errors] = await balar.run(
+        [1, 2, 3, 4],
+        async function (id: number) {
+          if (id === 1) {
+            return registry.identity(id);
+          }
+          return registry.throwsOnEven(id);
+        },
+      );
+
+      // Assert
+      expectSuccessesToMatch(successes, new Map([[1, 1]]));
+      expectErrorsToMatch(
+        errors,
+        new Map([
+          [2, new Error('oops')],
+          [3, new Error('oops')],
+          [4, new Error('oops')],
         ]),
       );
     });
