@@ -1,5 +1,7 @@
 # `balar`
 
+![Tests](https://github.com/luismeyer95/balar/actions/workflows/test.yml/badge.svg)
+
 A TypeScript/Node.js library that allows developers to build network-efficient batch processing APIs with simpler code. Write logic that processes 1 item, and let `balar` scale it to handle more without multiplying the number of outbound requests.
 
 ---
