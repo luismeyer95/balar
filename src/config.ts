@@ -4,9 +4,10 @@ import {
   BatchMethods,
   ObjectFacade,
   BalarFn,
-  AssertBatchRecord,
+  BatchFnRecord,
   BatchFn,
-} from './api';
+  UnknownBalarFn,
+} from './types';
 import { EXECUTION } from './constants';
 import { getMethodsOfClassObject } from './utils';
 import hash from 'object-hash';
@@ -15,7 +16,7 @@ import { BalarError } from './primitives';
 /**
  * Creates a wrapper for a set of batch functions. The wrapper can be used in balar execution contexts (e.g. inside the `processorFn` provided to `balar.execute(inputs, processorFn)`). When a wrapped function is called inside `balar.run()`, inputs are collected across all executions of the processor function so that a single call to the underlying batch method is performed.
  *
- * @param batchFunctions A record of batch functions or batch function configurations (defined with `balar.def()`).
+ * @param batchFnRecord A record of batch functions.
  * @returns An object containing balar functions ready for use in balar execution contexts (`balar.run()`).
  *
  * @example
@@ -34,7 +35,7 @@ import { BalarError } from './primitives';
  * ```
  */
 export function fns<R extends Record<string, any>>(
-  batchFunctions: AssertBatchRecord<R>,
+  batchFnRecord: BatchFnRecord<R>,
 ): Facade<R> {
   if (EXECUTION.getStore()) {
     throw new BalarError(
@@ -45,10 +46,10 @@ export function fns<R extends Record<string, any>>(
   // Creates handlers from batch functions. Those are the user-exposed functions which are
   // not aware of any execution context. They delegate execution to the context-aware handlers
   // taken from the balar execution stored in async context.
-  const scalarHandlers: Record<string, BalarFn<unknown, unknown, unknown[]>> = {};
+  const scalarHandlers: Record<string, UnknownBalarFn> = {};
 
-  for (const entryName of Object.keys(batchFunctions)) {
-    const originalFn = batchFunctions[entryName];
+  for (const entryName of Object.keys(batchFnRecord)) {
+    const originalFn = batchFnRecord[entryName];
     const wrappedFn = generateUserExposedFn(entryName, originalFn);
 
     scalarHandlers[entryName] = wrappedFn;
@@ -132,21 +133,21 @@ function generateUserExposedFn(
     input: unknown | unknown[],
     ...extraArgs: unknown[]
   ): Promise<unknown | Map<unknown, unknown>> => {
-    const batchContext = EXECUTION.getStore();
+    const executionContext = EXECUTION.getStore();
     const inputs = Array.isArray(input) ? input : [input];
 
-    if (!batchContext) {
+    if (!executionContext) {
       return fn(inputs, ...extraArgs);
     }
 
     const argsId = extraArgs.length ? hash(extraArgs).slice(0, 6) : '';
-    const uniqueOperationId = `${uniquePrefix}-${entryName}${argsId}`;
+    const uniqueOperationId = `${uniquePrefix}/${entryName}-${argsId}`;
 
-    batchContext.logger?.(
+    executionContext.logger?.(
       `queueing input ${JSON.stringify(input)} for operation ${uniqueOperationId}`,
     );
 
-    const allResults = await batchContext.registerCall(
+    const allResults = await executionContext.registerCall(
       uniqueOperationId,
       fn,
       inputs,

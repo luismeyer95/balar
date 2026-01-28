@@ -2,7 +2,8 @@ import { run } from './execution';
 import { fns, object } from './config';
 import { _if, _switch } from './control-flow';
 
-export { ExecutionOptions, BalarFn } from './api';
+export { ExecutionOptions, BalarFn } from './types';
+
 export {
   BalarStopError,
   ExecutionResults as Result,

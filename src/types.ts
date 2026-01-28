@@ -1,16 +1,20 @@
 import { ExecutionResultsInternal } from './primitives';
 
-export type ProcessorFn<In, Out> = (request: In) => Promise<Out>;
+export type BatchFn<In, Out, Args extends readonly unknown[]> = BatchFnMapOut<
+  In,
+  Out,
+  Args
+> &
+  BatchFnArrayOut<In, Out, Args>;
 
-export type BatchFn<In, Out, Args extends readonly unknown[]> = BatchMapFn<In, Out, Args> &
-  BatchArrayFn<In, Out, Args>;
+export type UnknownBatchFn = BatchFn<unknown, unknown, unknown[]>;
 
-export type BatchMapFn<In, Out, Args extends readonly unknown[]> = (
+export type BatchFnMapOut<In, Out, Args extends readonly unknown[]> = (
   request: In[],
   ...args: Args
 ) => Promise<Map<In, Out>>;
 
-export type BatchArrayFn<In, Out, Args extends readonly unknown[]> = (
+export type BatchFnArrayOut<In, Out, Args extends readonly unknown[]> = (
   request: In[],
   ...args: Args
 ) => Promise<Out[]>;
@@ -35,12 +39,8 @@ export type IsBatchArrayFn<Fn> = Fn extends (
     : true
   : false;
 
-export type AssertBatchRecord<R extends Record<string, any>> = {
+export type BatchFnRecord<R extends Record<string, any>> = {
   [K in keyof R]: IsBatchFn<R[K]> extends true ? R[K] : never;
-};
-
-export type BatchRecord<R extends Record<string, any>> = {
-  [K in keyof R as IsBatchFn<R[K]> extends true ? K : never]: R[K];
 };
 
 export type ScalarFn<In, Out, Args extends readonly unknown[], Nullable> = (
@@ -53,20 +53,24 @@ export type BalarFn<
   Out,
   Args extends readonly unknown[],
   Nullable = true,
-> = BatchMapFn<In, Out, Args> & ScalarFn<In, Out, Args, Nullable>;
+> = BatchFnMapOut<In, Out, Args> & ScalarFn<In, Out, Args, Nullable>;
+
+export type UnknownBalarFn = BalarFn<unknown, unknown, unknown[]>;
 
 export type DeferredPromise<T> = {
   resolve: (ret: T) => void;
   reject: (err: unknown) => void;
-  cachedPromise: Promise<T> | null;
+  cachedPromise: Promise<T>;
 };
 
 export type BatchOperation<In, Out, Args extends readonly unknown[]> = {
   input: Set<In>;
   extraArgs: Args;
   fn: BatchFn<In, Out, Args>;
-  call: DeferredPromise<Map<In, Out>> | null;
+  call: DeferredPromise<Map<In, Out>>;
 };
+
+export type ProcessorFn<In, Out> = (request: In) => Promise<Out>;
 
 export type ScopeOperation<In, Out> = {
   input: In[];

@@ -2,9 +2,8 @@ import {
   ExecutionOptions,
   BatchOperation,
   ScopeOperation,
-  DeferredPromise,
-  BatchFn,
-} from './api';
+  UnknownBatchFn,
+} from './types';
 import { EXECUTION, PROCESSOR_ID } from './constants';
 import {
   BalarError,
@@ -14,6 +13,7 @@ import {
 } from './primitives';
 import crypto from 'node:crypto';
 import { chunk } from './utils';
+import { DeferredPromise } from './deferred-promise';
 
 /**
  * Processes a batch of inputs using the provided processor function and returns the results keyed by input. When a wrapped batch function (obtained via `balar.wrap.fns()` or `balar.wrap.object()`) is called inside `balar.run()`, inputs are collected across all executions of the processor function so that only a single call to the underlying batch function is performed.
@@ -151,25 +151,10 @@ export class BalarExecution<MainIn, MainOut> {
     const scopeSyncMetadata: ScopeOperation<unknown, unknown> = {
       input: [],
       fnByInput: new Map(),
-      call: this.initDeferredPromise(),
+      call: new DeferredPromise(),
     };
 
     return scopeSyncMetadata;
-  }
-
-  initDeferredPromise<T>(): DeferredPromise<T> {
-    const call: DeferredPromise<T> = {
-      resolve: () => {},
-      reject: () => {},
-      cachedPromise: null,
-    };
-
-    call.cachedPromise = new Promise((resolve, reject) => {
-      call.resolve = resolve;
-      call.reject = reject;
-    });
-
-    return call;
   }
 
   async run(requests: MainIn[]): Promise<ExecutionResultsInternal<MainIn, MainOut>> {
@@ -254,7 +239,7 @@ export class BalarExecution<MainIn, MainOut> {
     if (this.checkpointCache.size > 0) {
       for (const opName of this.checkpointCache.keys()) {
         const batchOp = this.checkpointCache.get(opName);
-        batchOp?.call?.reject(error);
+        batchOp?.call.reject(error);
       }
       this.checkpointCache.clear();
     }
@@ -309,7 +294,7 @@ export class BalarExecution<MainIn, MainOut> {
 
   private executeCheckpointBatchOperation(opName: string) {
     const batchOp = this.checkpointCache.get(opName);
-    if (!batchOp?.call) {
+    if (!batchOp) {
       return;
     }
 
@@ -327,7 +312,7 @@ export class BalarExecution<MainIn, MainOut> {
       .fn(inputArray, ...batchOp.extraArgs)
       .then((result) => {
         if (!Array.isArray(result)) {
-          batchOp.call!.resolve(result);
+          batchOp.call.resolve(result);
           return;
         }
 
@@ -338,7 +323,7 @@ export class BalarExecution<MainIn, MainOut> {
           );
         }
 
-        batchOp.call!.resolve(new Map(result.map((res, i) => [inputArray[i], res])));
+        batchOp.call.resolve(new Map(result.map((res, i) => [inputArray[i], res])));
       })
       .catch(batchOp.call.reject);
   }
@@ -425,7 +410,7 @@ export class BalarExecution<MainIn, MainOut> {
 
   registerCall(
     operationId: string,
-    fn: BatchFn<unknown, unknown, unknown[]>,
+    fn: UnknownBatchFn,
     inputs: unknown[],
     extraArgs: unknown[],
   ) {
@@ -434,18 +419,19 @@ export class BalarExecution<MainIn, MainOut> {
       throw new BalarError('balar error: missing processor ID');
     }
 
-    const batchOp = this.checkpointCache.get(operationId) ?? {
-      fn,
-      input: new Set(),
-      extraArgs,
-      call: null,
-    };
-    this.checkpointCache.set(operationId, batchOp);
-
-    if (!batchOp.call) {
-      batchOp.call = this.initDeferredPromise();
+    if (!this.checkpointCache.has(operationId)) {
+      this.checkpointCache.set(operationId, {
+        fn,
+        input: new Set(),
+        extraArgs,
+        call: new DeferredPromise(),
+      });
     }
-    inputs.forEach((input) => batchOp.input.add(input));
+
+    const batchOp = this.checkpointCache.get(operationId)!;
+    for (const input of inputs) {
+      batchOp.input.add(input);
+    }
 
     this.awaitingProcessors.add(processorId);
     if (this.awaitingProcessors.size + this.doneProcessors === this.totalProcessors) {
@@ -453,6 +439,6 @@ export class BalarExecution<MainIn, MainOut> {
     }
 
     // Returns the whole result set => consumers should filter
-    return batchOp.call!.cachedPromise!;
+    return batchOp.call.cachedPromise;
   }
 }
