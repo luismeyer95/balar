@@ -584,91 +584,11 @@ const results = await balar.run(customers, async (customer) => {
 // customers automatically grouped by tier and batched
 ```
 
+---
+
 ## Benchmarks (WIP 🚧)
 
-> ⓘ  If you have experience with benchmarking, please feel free to contribute your findings to this section!
-
-I ran a series of benchmarks to compare the performance of `balar` with:
-- sequential processing (no batching)
-- concurrent processing (no batching)
-- manual batching
-
-**Test conditions**
-
-- M1 MacBook Pro, using node 24 (optimized `AsyncLocalStorage`)
-- Benchmarked code: Nest.js API endpoint using the budget update logic from the [quick start](#quick-start) example. The endpoint accepts an input `N` specifying the number of items to process as part of the HTTP request.
-- Each version of the endpoint is tested with Apache bench (`ab -k -c 60 -n 500 host:port`). Results represent the duration of requests by percentile in ms.
-- Each batch processing function simulates I/O by having fluctuating 20-30ms network latency (time to first byte) and by simulating an average network throughput of 400 Mbps. (TODO: benchmark with real network I/O)
-
-<details>
-<summary><h3 style="display: inline-block;">1 item</h3></summary>
-
-| Percentile | Sequential | Concurrent | Manual batching | Balar batching |
-|------------|-----------|------------|-----------------|----------------|
-| p50 | 52 | 52 | 54 | 53 |
-| p66 | 54 | 55 | 56 | 55 |
-| p75 | 55 | 56 | 57 | 57 |
-| p80 | 56 | 58 | 58 | 58 |
-| p90 | 58 | 60 | 60 | 60 |
-| p95 | 60 | 62 | 64 | 64 |
-| p98 | 62 | 67 | 65 | 68 |
-| p99 | 63 | 68 | 65 | 70 |
-| p100 | 67 | 69 | 67 | 71 |
-
-</details>
-
-<details>
-<summary><h3 style="display: inline-block;">10 items</h3></summary>
-
-| Percentile | Sequential | Concurrent | Manual batching | Balar batching |
-|------------|-----------|------------|-----------------|----------------|
-| p50 | 469 | 60 | 54 | 54 |
-| p66 | 486 | 62 | 56 | 56 |
-| p75 | 494 | 63 | 57 | 58 |
-| p80 | 500 | 64 | 58 | 59 |
-| p90 | 514 | 66 | 60 | 61 |
-| p95 | 525 | 68 | 63 | 63 |
-| p98 | 532 | 69 | 66 | 66 |
-| p99 | 537 | 70 | 68 | 67 |
-| p100 | 543 | 72 | 72 | 71 |
-
-</details>
-
-<details>
-<summary><h3 style="display: inline-block;">100 items</h3></summary>
-
-| Percentile | Sequential | Concurrent | Manual batching | Balar batching |
-|------------|-----------|------------|-----------------|----------------|
-| p50 | 4626 | 66 | 54 | 55 |
-| p66 | 4678 | 68 | 56 | 57 |
-| p75 | 4707 | 70 | 57 | 59 |
-| p80 | 4729 | 70 | 59 | 60 |
-| p90 | 4779 | 76 | 61 | 64 |
-| p95 | 4820 | 77 | 64 | 70 |
-| p98 | 4887 | 80 | 73 | 74 |
-| p99 | 4887 | 80 | 74 | 76 |
-| p100 | 4930 | 80 | 77 | 79 |
-
-</details>
-
-<details>
-<summary><h3 style="display: inline-block;">500 items</h3></summary>
-
-> ⓘ  Skipping sequential here as it is too slow to be relevant.
-
-| Percentile | Sequential | Concurrent | Manual batching | Balar batching |
-|------------|-----------|------------|-----------------|----------------|
-| p50 | — | 143 | 55 | 96 |
-| p66 | — | 152 | 57 | 102 |
-| p75 | — | 162 | 59 | 106 |
-| p80 | — | 170 | 60 | 109 |
-| p90 | — | 178 | 63 | 114 |
-| p95 | — | 193 | 68 | 124 |
-| p98 | — | 274 | 75 | 139 |
-| p99 | — | 347 | 81 | 142 |
-| p100 | — | 391 | 92 | 168 |
-
-</details>
+---
 
 ## ❓ FAQ
 
